@@ -1,0 +1,315 @@
+package service
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log/slog"
+	"strings"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/meridian/api/internal/ai"
+	"github.com/meridian/api/internal/dto"
+	"github.com/meridian/api/internal/repository"
+)
+
+type PlanService struct {
+	queries  *repository.Queries
+	aiClient *ai.Client
+	logger   *slog.Logger
+}
+
+func NewPlanService(queries *repository.Queries, aiClient *ai.Client, logger *slog.Logger) *PlanService {
+	return &PlanService{queries: queries, aiClient: aiClient, logger: logger}
+}
+
+// GeneratePlan creates a new content plan using AI.
+func (s *PlanService) GeneratePlan(ctx context.Context, accountID uuid.UUID, startDate time.Time) (uuid.UUID, error) {
+	// Load settings
+	settings, err := s.queries.GetBrandSettings(ctx, accountID)
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("generate plan: get settings: %w", err)
+	}
+
+	// Calculate end date (30 days) and total slots based on frequency
+	endDate := startDate.AddDate(0, 0, 29)
+	totalSlots := calculateTotalSlots(settings.PostingFrequency, 30)
+
+	// Create plan record
+	title := fmt.Sprintf("%s %d Plan", startDate.Month().String(), startDate.Year())
+	plan, err := s.queries.CreatePlan(ctx, repository.CreatePlanParams{
+		InstagramAccountID: accountID,
+		Title:              title,
+		StartDate:          startDate,
+		EndDate:            endDate,
+		TotalSlots:         int32(totalSlots),
+	})
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("generate plan: create plan: %w", err)
+	}
+
+	// Build system prompt from settings
+	systemPrompt := s.buildPlanSystemPrompt(settings)
+	userPrompt := ai.BuildPlanUserPrompt(
+		totalSlots,
+		startDate.Format("2006-01-02"),
+		endDate.Format("2006-01-02"),
+	)
+
+	// Call AI
+	rawResponse, err := s.aiClient.Generate(ctx, systemPrompt, userPrompt, 16000)
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("generate plan: AI: %w", err)
+	}
+
+	// Parse slots
+	slots, err := ai.ParseJSON[[]slotAIResponse](rawResponse)
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("generate plan: parse slots: %w", err)
+	}
+
+	// Insert slots
+	for _, slot := range slots {
+		briefJSON, err := json.Marshal(slot.Brief)
+		if err != nil {
+			s.logger.Error("marshal brief failed", slog.Int("day", slot.DayNumber), slog.String("error", err.Error()))
+			continue
+		}
+
+		scheduledDate, _ := time.Parse("2006-01-02", slot.ScheduledDate)
+		scheduledTime, _ := time.Parse("15:04", slot.ScheduledTime)
+
+		hashtags := slot.Hashtags
+		if hashtags == nil {
+			hashtags = []string{}
+		}
+
+		_, err = s.queries.CreateSlot(ctx, repository.CreateSlotParams{
+			PlanID:        plan.ID,
+			DayNumber:     int32(slot.DayNumber),
+			ScheduledDate: scheduledDate,
+			ScheduledTime: scheduledTime,
+			Title:         slot.Title,
+			ContentType:   slot.ContentType,
+			Format:        slot.Format,
+			Brief:         briefJSON,
+			Caption:       slot.Caption,
+			Hashtags:      hashtags,
+			Cta:           &slot.CTA,
+		})
+		if err != nil {
+			s.logger.Error("insert slot failed", slog.Int("day", slot.DayNumber), slog.String("error", err.Error()))
+		}
+	}
+
+	s.logger.Info("plan generated", slog.String("plan_id", plan.ID.String()), slog.Int("slots", len(slots)))
+	return plan.ID, nil
+}
+
+// GetPlan returns a plan with all its slots.
+func (s *PlanService) GetPlan(ctx context.Context, planID uuid.UUID) (dto.ContentPlanDTO, error) {
+	plan, err := s.queries.GetPlanByID(ctx, planID)
+	if err != nil {
+		return dto.ContentPlanDTO{}, fmt.Errorf("get plan: %w", err)
+	}
+
+	slots, err := s.queries.GetSlotsByPlanID(ctx, planID)
+	if err != nil {
+		return dto.ContentPlanDTO{}, fmt.Errorf("get plan slots: %w", err)
+	}
+
+	slotDTOs := make([]dto.ContentSlotDTO, 0, len(slots))
+	for _, slot := range slots {
+		d, err := slotToDTO(slot)
+		if err != nil {
+			continue
+		}
+		slotDTOs = append(slotDTOs, d)
+	}
+
+	return dto.ContentPlanDTO{
+		ContentPlanSummaryDTO: planToSummaryDTO(plan),
+		Slots:                 slotDTOs,
+	}, nil
+}
+
+// ListPlans returns all plans for an account.
+func (s *PlanService) ListPlans(ctx context.Context, accountID uuid.UUID) ([]dto.ContentPlanSummaryDTO, error) {
+	plans, err := s.queries.GetPlansByAccountID(ctx, accountID)
+	if err != nil {
+		return nil, fmt.Errorf("list plans: %w", err)
+	}
+
+	result := make([]dto.ContentPlanSummaryDTO, 0, len(plans))
+	for _, p := range plans {
+		result = append(result, planToSummaryDTO(p))
+	}
+	return result, nil
+}
+
+// UpdatePlanStatus changes a plan's status.
+func (s *PlanService) UpdatePlanStatus(ctx context.Context, planID uuid.UUID, status string) error {
+	_, err := s.queries.UpdatePlanStatus(ctx, repository.UpdatePlanStatusParams{
+		ID:     planID,
+		Status: status,
+	})
+	if err != nil {
+		return fmt.Errorf("update plan status: %w", err)
+	}
+	return nil
+}
+
+// DeletePlan removes a plan and its slots.
+func (s *PlanService) DeletePlan(ctx context.Context, planID uuid.UUID) error {
+	if err := s.queries.DeletePlan(ctx, planID); err != nil {
+		return fmt.Errorf("delete plan: %w", err)
+	}
+	return nil
+}
+
+func (s *PlanService) buildPlanSystemPrompt(settings repository.BrandSetting) string {
+	toneCustom := ""
+	if settings.ToneCustomNote != nil {
+		toneCustom = *settings.ToneCustomNote
+	}
+
+	formats := buildFormatsString(settings)
+	customRules := ""
+	if settings.CustomRules != nil {
+		customRules = *settings.CustomRules
+	}
+
+	productsServices := derefStr(settings.ProductsServices)
+	targetAudience := derefStr(settings.TargetAudience)
+	usp := derefStr(settings.Usp)
+	location := derefStr(settings.LocationAddress)
+	hours := derefStr(settings.WorkingHours)
+
+	teamJSON := "[]"
+	if settings.TeamMembers != nil {
+		teamJSON = string(settings.TeamMembers)
+	}
+	eventsJSON := "[]"
+	if settings.UpcomingEvents != nil {
+		eventsJSON = string(settings.UpcomingEvents)
+	}
+
+	return fmt.Sprintf(ai.PlanSystemPromptTemplate(),
+		settings.ContentGoal,
+		strings.Join(settings.ToneTraits, ", "), toneCustom,
+		settings.MixUseful, settings.MixSelling, settings.MixPersonal, settings.MixEntertaining,
+		formats,
+		settings.PostingFrequency,
+		strings.Join(settings.CompetitorNames, ", "),
+		strings.Join(settings.BannedWords, ", "),
+		strings.Join(settings.BannedTopics, ", "),
+		strings.Join(settings.ContentRestrictions, ", "),
+		customRules,
+		productsServices,
+		targetAudience,
+		usp,
+		teamJSON,
+		location, hours,
+		eventsJSON,
+		settings.ContentLanguage,
+	)
+}
+
+func buildFormatsString(s repository.BrandSetting) string {
+	var parts []string
+	if s.FormatReelsEnabled {
+		parts = append(parts, fmt.Sprintf("Reels %d%%", s.FormatReelsPct))
+	}
+	if s.FormatCarouselEnabled {
+		parts = append(parts, fmt.Sprintf("Carousel %d%%", s.FormatCarouselPct))
+	}
+	if s.FormatPhotoEnabled {
+		parts = append(parts, fmt.Sprintf("Photo %d%%", s.FormatPhotoPct))
+	}
+	return strings.Join(parts, ", ")
+}
+
+func calculateTotalSlots(frequency string, days int) int {
+	switch frequency {
+	case "daily":
+		return days
+	case "every_other_day":
+		return days / 2
+	case "3_per_week":
+		return (days / 7) * 3
+	case "2_per_week":
+		return (days / 7) * 2
+	default:
+		return days
+	}
+}
+
+func derefStr(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
+}
+
+type slotAIResponse struct {
+	DayNumber     int              `json:"day_number"`
+	ScheduledDate string           `json:"scheduled_date"`
+	ScheduledTime string           `json:"scheduled_time"`
+	Title         string           `json:"title"`
+	ContentType   string           `json:"content_type"`
+	Format        string           `json:"format"`
+	Brief         dto.ContentBrief `json:"brief"`
+	Caption       string           `json:"caption"`
+	Hashtags      []string         `json:"hashtags"`
+	CTA           string           `json:"cta"`
+}
+
+func planToSummaryDTO(p repository.ContentPlan) dto.ContentPlanSummaryDTO {
+	return dto.ContentPlanSummaryDTO{
+		ID:             p.ID,
+		Title:          p.Title,
+		StartDate:      p.StartDate.Format("2006-01-02"),
+		EndDate:        p.EndDate.Format("2006-01-02"),
+		Status:         p.Status,
+		TotalSlots:     int(p.TotalSlots),
+		ApprovedSlots:  int(p.ApprovedSlots),
+		PublishedSlots: int(p.PublishedSlots),
+		CreatedAt:      p.CreatedAt,
+	}
+}
+
+func slotToDTO(s repository.ContentSlot) (dto.ContentSlotDTO, error) {
+	var brief dto.ContentBrief
+	if err := json.Unmarshal(s.Brief, &brief); err != nil {
+		return dto.ContentSlotDTO{}, fmt.Errorf("unmarshal brief: %w", err)
+	}
+
+	var media []dto.MediaItem
+	if err := json.Unmarshal(s.Media, &media); err != nil {
+		media = []dto.MediaItem{}
+	}
+
+	result := dto.ContentSlotDTO{
+		ID:            s.ID,
+		PlanID:        s.PlanID,
+		DayNumber:     int(s.DayNumber),
+		ScheduledDate: s.ScheduledDate.Format("2006-01-02"),
+		ScheduledTime: s.ScheduledTime.Format("15:04"),
+		Title:         s.Title,
+		ContentType:   s.ContentType,
+		Format:        s.Format,
+		Brief:         brief,
+		Caption:       s.Caption,
+		Hashtags:      s.Hashtags,
+		CTA:           s.Cta,
+		Media:         media,
+		Status:        s.Status,
+		IsUserContent: s.IsUserContent,
+		PublishedAt:   s.PublishedAt,
+		IGPostURL:     s.IgPostUrl,
+		RegenCount:    int(s.RegenerationCount),
+	}
+
+	return result, nil
+}
