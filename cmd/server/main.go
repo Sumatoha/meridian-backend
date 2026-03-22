@@ -102,8 +102,16 @@ func main() {
 	billingH := handler.NewBillingHandler(billingSvc, logger)
 	publicH := handler.NewPublicHandler(logger)
 
-	// Auth middleware
-	authMW := auth.NewMiddleware(cfg.SupabaseJWTSecret)
+	// Auth middleware — JWKS (RS256) with HMAC fallback
+	jwksURL := ""
+	if cfg.SupabaseURL != "" {
+		jwksURL = strings.TrimRight(cfg.SupabaseURL, "/") + "/.well-known/jwks.json"
+	}
+	authMW, err := auth.NewMiddleware(jwksURL, cfg.SupabaseJWTSecret)
+	if err != nil {
+		logger.Error("failed to initialize auth middleware", slog.String("error", err.Error()))
+		os.Exit(1)
+	}
 
 	// Rate limiters
 	aiRateLimiter := middleware.NewRateLimiter(5, time.Minute)

@@ -9,6 +9,7 @@ import (
 type Config struct {
 	Port               int
 	DatabaseURL        string
+	SupabaseURL        string
 	SupabaseJWTSecret  string
 	SupabaseStorageURL string
 	SupabaseServiceKey string
@@ -35,6 +36,7 @@ func Load() (Config, error) {
 	cfg := Config{
 		Port:               port,
 		DatabaseURL:        os.Getenv("DATABASE_URL"),
+		SupabaseURL:        os.Getenv("SUPABASE_URL"),
 		SupabaseJWTSecret:  os.Getenv("SUPABASE_JWT_SECRET"),
 		SupabaseStorageURL: os.Getenv("SUPABASE_STORAGE_URL"),
 		SupabaseServiceKey: os.Getenv("SUPABASE_SERVICE_ROLE_KEY"),
