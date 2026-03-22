@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
 	"time"
@@ -43,10 +44,13 @@ func (h *PlanHandler) Generate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Synchronous generation — client waits for the full plan
-	// AI call takes 1-3 min, but this is more reliable than goroutines
-	// that get killed on redeploy
-	planID, err := h.planSvc.GeneratePlan(r.Context(), accountID, startDate)
+	// Use a detached context for AI generation — r.Context() cancels if
+	// the client disconnects, but we still want the plan to be created.
+	// 5 min timeout is generous for AI generation.
+	genCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	planID, err := h.planSvc.GeneratePlan(genCtx, accountID, startDate)
 	if err != nil {
 		h.logger.Error("plan generation failed", slog.String("error", err.Error()))
 		respondError(w, http.StatusInternalServerError, "generation_failed", err.Error())
