@@ -10,5 +10,8 @@ Railway env vars can have trailing newlines or spaces from copy-paste. Always `s
 ## Goroutine with r.Context() cancels immediately after 202
 When spawning a goroutine from an HTTP handler that returns early (202 Accepted), never pass `r.Context()` — it cancels when the response is sent. Use `context.Background()` for background work.
 
+## Silent slot insertion errors leave plans empty
+Never ignore DB insert errors in a loop. If CreateSlot fails (constraint violation, bad data, etc.), log the error AND track it. If ALL inserts fail, return an error — otherwise the plan exists with 0 slots and the frontend shows an empty calendar. Always log: AI response length, parsed slot count, inserted count, and the actual error.
+
 ## Supabase JWKS endpoint path
 Supabase serves JWKS at `/auth/v1/.well-known/jwks.json`, NOT at `/.well-known/jwks.json`. The correct URL is `{SUPABASE_URL}/auth/v1/.well-known/jwks.json`. Discoverable via OpenID config at `/auth/v1/.well-known/openid-configuration`.

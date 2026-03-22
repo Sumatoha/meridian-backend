@@ -85,22 +85,63 @@ func (s *PlanService) GeneratePlan(ctx context.Context, accountID uuid.UUID, sta
 		return uuid.Nil, fmt.Errorf("generate plan: AI: %w", err)
 	}
 
+	s.logger.Info("AI response received",
+		slog.String("plan_id", plan.ID.String()),
+		slog.Int("response_len", len(rawResponse)),
+		slog.String("response_preview", truncateStr(rawResponse, 300)),
+	)
+
 	// Parse slots
 	slots, err := ai.ParseJSON[[]slotAIResponse](rawResponse)
 	if err != nil {
+		s.logger.Error("parse AI response failed",
+			slog.String("error", err.Error()),
+			slog.String("raw_response", truncateStr(rawResponse, 1000)),
+		)
 		return uuid.Nil, fmt.Errorf("generate plan: parse slots: %w", err)
 	}
 
+	s.logger.Info("parsed slots from AI",
+		slog.Int("count", len(slots)),
+	)
+
 	// Insert slots
+	s.logger.Info("inserting slots",
+		slog.String("plan_id", plan.ID.String()),
+		slog.Int("ai_returned", len(slots)),
+	)
+
+	inserted := 0
+	var lastErr error
 	for _, slot := range slots {
 		briefJSON, err := json.Marshal(slot.Brief)
 		if err != nil {
 			s.logger.Error("marshal brief failed", slog.Int("day", slot.DayNumber), slog.String("error", err.Error()))
+			lastErr = err
 			continue
 		}
 
-		scheduledDate, _ := time.Parse("2006-01-02", slot.ScheduledDate)
-		scheduledTime, _ := time.Parse("15:04", slot.ScheduledTime)
+		scheduledDate, err := time.Parse("2006-01-02", slot.ScheduledDate)
+		if err != nil {
+			s.logger.Error("parse scheduled_date failed",
+				slog.Int("day", slot.DayNumber),
+				slog.String("raw", slot.ScheduledDate),
+				slog.String("error", err.Error()),
+			)
+			lastErr = err
+			continue
+		}
+
+		scheduledTime, err := time.Parse("15:04", slot.ScheduledTime)
+		if err != nil {
+			s.logger.Error("parse scheduled_time failed",
+				slog.Int("day", slot.DayNumber),
+				slog.String("raw", slot.ScheduledTime),
+				slog.String("error", err.Error()),
+			)
+			lastErr = err
+			continue
+		}
 
 		hashtags := slot.Hashtags
 		if hashtags == nil {
@@ -121,11 +162,36 @@ func (s *PlanService) GeneratePlan(ctx context.Context, accountID uuid.UUID, sta
 			Cta:           &slot.CTA,
 		})
 		if err != nil {
-			s.logger.Error("insert slot failed", slog.Int("day", slot.DayNumber), slog.String("error", err.Error()))
+			s.logger.Error("insert slot failed",
+				slog.Int("day", slot.DayNumber),
+				slog.String("title", slot.Title),
+				slog.String("content_type", slot.ContentType),
+				slog.String("format", slot.Format),
+				slog.String("error", err.Error()),
+			)
+			lastErr = err
+			continue
 		}
+		inserted++
 	}
 
-	s.logger.Info("plan generated", slog.String("plan_id", plan.ID.String()), slog.Int("slots", len(slots)))
+	s.logger.Info("plan generated",
+		slog.String("plan_id", plan.ID.String()),
+		slog.Int("ai_returned", len(slots)),
+		slog.Int("inserted", inserted),
+	)
+
+	if inserted == 0 && len(slots) > 0 {
+		return uuid.Nil, fmt.Errorf("generate plan: all %d slots failed to insert: %w", len(slots), lastErr)
+	}
+
+	if inserted < len(slots) {
+		s.logger.Warn("some slots failed to insert",
+			slog.Int("failed", len(slots)-inserted),
+			slog.Int("inserted", inserted),
+		)
+	}
+
 	return plan.ID, nil
 }
 
@@ -272,6 +338,13 @@ func derefStr(s *string) string {
 		return ""
 	}
 	return *s
+}
+
+func truncateStr(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
 }
 
 type slotAIResponse struct {
