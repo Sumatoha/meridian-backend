@@ -9,11 +9,15 @@ import (
 	"github.com/meridian/api/internal/dto"
 )
 
+type dataEnvelope struct {
+	Data interface{} `json:"data"`
+}
+
 func respondJSON(w http.ResponseWriter, status int, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	if data != nil {
-		json.NewEncoder(w).Encode(data)
+		json.NewEncoder(w).Encode(dataEnvelope{Data: data})
 	}
 }
 
