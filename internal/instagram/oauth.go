@@ -1,13 +1,11 @@
 package instagram
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
-	"mime/multipart"
 	"net/http"
 	"net/url"
 	"time"
@@ -53,15 +51,12 @@ func (c *OAuthClient) BuildAuthURL(state string) string {
 
 // ExchangeCode exchanges an authorization code for a short-lived access token.
 func (c *OAuthClient) ExchangeCode(ctx context.Context, code string) (string, string, error) {
-	// Instagram token endpoint works more reliably with multipart/form-data
-	var body bytes.Buffer
-	writer := multipart.NewWriter(&body)
-	writer.WriteField("client_id", c.appID)
-	writer.WriteField("client_secret", c.appSecret)
-	writer.WriteField("grant_type", "authorization_code")
-	writer.WriteField("redirect_uri", c.redirectURI)
-	writer.WriteField("code", code)
-	writer.Close()
+	data := url.Values{}
+	data.Set("client_id", c.appID)
+	data.Set("client_secret", c.appSecret)
+	data.Set("grant_type", "authorization_code")
+	data.Set("redirect_uri", c.redirectURI)
+	data.Set("code", code)
 
 	slog.Info("oauth: exchanging code",
 		slog.String("redirect_uri", c.redirectURI),
@@ -71,13 +66,7 @@ func (c *OAuthClient) ExchangeCode(ctx context.Context, code string) (string, st
 		slog.String("code_suffix", code[max(0, len(code)-20):]),
 	)
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, instagramTokenURL, &body)
-	if err != nil {
-		return "", "", fmt.Errorf("build token request: %w", err)
-	}
-	req.Header.Set("Content-Type", writer.FormDataContentType())
-
-	resp, err := c.httpClient.Do(req)
+	resp, err := http.PostForm(instagramTokenURL, data)
 	if err != nil {
 		return "", "", fmt.Errorf("token request: %w", err)
 	}
@@ -94,13 +83,13 @@ func (c *OAuthClient) ExchangeCode(ctx context.Context, code string) (string, st
 
 	var result struct {
 		AccessToken string `json:"access_token"`
-		UserID      string `json:"user_id"`
+		UserID      int64  `json:"user_id"`
 	}
 	if err := json.Unmarshal(respBody, &result); err != nil {
 		return "", "", fmt.Errorf("parse token response: %w", err)
 	}
 
-	return result.AccessToken, result.UserID, nil
+	return result.AccessToken, fmt.Sprintf("%d", result.UserID), nil
 }
 
 // ExchangeLongLivedToken swaps a short-lived token for a 60-day long-lived token.
