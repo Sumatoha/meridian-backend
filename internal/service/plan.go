@@ -79,8 +79,8 @@ func (s *PlanService) GeneratePlan(ctx context.Context, accountID uuid.UUID, sta
 		endDate.Format("2006-01-02"),
 	)
 
-	// Call AI
-	rawResponse, err := s.aiClient.Generate(ctx, systemPrompt, userPrompt, 16000)
+	// Call AI — need large token limit for 30 detailed slots
+	rawResponse, err := s.aiClient.Generate(ctx, systemPrompt, userPrompt, 64000)
 	if err != nil {
 		return uuid.Nil, fmt.Errorf("generate plan: AI: %w", err)
 	}
@@ -113,6 +113,39 @@ func (s *PlanService) GeneratePlan(ctx context.Context, accountID uuid.UUID, sta
 
 	inserted := 0
 	var lastErr error
+	for i := range slots {
+		slot := &slots[i]
+		// Normalize AI output — DB has CHECK constraints for lowercase values
+		slot.ContentType = strings.ToLower(strings.TrimSpace(slot.ContentType))
+		slot.Format = strings.ToLower(strings.TrimSpace(slot.Format))
+		slot.ScheduledDate = strings.TrimSpace(slot.ScheduledDate)
+		slot.ScheduledTime = strings.TrimSpace(slot.ScheduledTime)
+
+		// Validate content_type
+		switch slot.ContentType {
+		case "useful", "selling", "personal", "entertaining":
+			// ok
+		default:
+			s.logger.Warn("invalid content_type from AI, defaulting to useful",
+				slog.Int("day", slot.DayNumber),
+				slog.String("raw", slot.ContentType),
+			)
+			slot.ContentType = "useful"
+		}
+
+		// Validate format
+		switch slot.Format {
+		case "reels", "carousel", "photo":
+			// ok
+		default:
+			s.logger.Warn("invalid format from AI, defaulting to photo",
+				slog.Int("day", slot.DayNumber),
+				slog.String("raw", slot.Format),
+			)
+			slot.Format = "photo"
+		}
+	}
+
 	for _, slot := range slots {
 		briefJSON, err := json.Marshal(slot.Brief)
 		if err != nil {
