@@ -189,6 +189,7 @@ func main() {
 		// Accounts
 		r.Post("/accounts", accountH.Create)
 		r.Get("/accounts", accountH.List)
+		r.Get("/accounts/{id}", accountH.Get)
 		r.Delete("/accounts/{id}", accountH.Delete)
 
 		// Brand settings

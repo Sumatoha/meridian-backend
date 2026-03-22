@@ -81,6 +81,33 @@ func (h *AccountHandler) List(w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, http.StatusOK, accounts)
 }
 
+func (h *AccountHandler) Get(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseUUID(chi.URLParam(r, "id"), h.logger)
+	if !ok {
+		respondError(w, http.StatusBadRequest, "invalid_id", "invalid account ID")
+		return
+	}
+
+	account, err := h.svc.GetAccountForUser(r.Context(), id)
+	if err != nil {
+		h.logger.Warn("accounts.get: not found",
+			slog.String("account_id", id.String()),
+			slog.String("error", err.Error()),
+		)
+		respondError(w, http.StatusNotFound, "not_found", "account not found")
+		return
+	}
+
+	respondJSON(w, http.StatusOK, dto.AccountResponse{
+		ID:               account.ID,
+		IGUsername:        account.IgUsername,
+		IsOAuthConnected: account.IsOauthConnected,
+		IGUserID:         account.IgUserID,
+		ProfilePicURL:    account.ProfilePicUrl,
+		FollowersCount:   account.FollowersCount,
+	})
+}
+
 func (h *AccountHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	userID := auth.UserID(r.Context())
 
