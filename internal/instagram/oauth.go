@@ -1,14 +1,15 @@
 package instagram
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
+	"mime/multipart"
 	"net/http"
 	"net/url"
-	"strings"
 	"time"
 )
 
@@ -52,13 +53,15 @@ func (c *OAuthClient) BuildAuthURL(state string) string {
 
 // ExchangeCode exchanges an authorization code for a short-lived access token.
 func (c *OAuthClient) ExchangeCode(ctx context.Context, code string) (string, string, error) {
-	params := url.Values{
-		"client_id":     {c.appID},
-		"client_secret": {c.appSecret},
-		"grant_type":    {"authorization_code"},
-		"redirect_uri":  {c.redirectURI},
-		"code":          {code},
-	}
+	// Instagram token endpoint works more reliably with multipart/form-data
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	writer.WriteField("client_id", c.appID)
+	writer.WriteField("client_secret", c.appSecret)
+	writer.WriteField("grant_type", "authorization_code")
+	writer.WriteField("redirect_uri", c.redirectURI)
+	writer.WriteField("code", code)
+	writer.Close()
 
 	slog.Info("oauth: exchanging code",
 		slog.String("redirect_uri", c.redirectURI),
@@ -68,11 +71,11 @@ func (c *OAuthClient) ExchangeCode(ctx context.Context, code string) (string, st
 		slog.String("code_suffix", code[max(0, len(code)-20):]),
 	)
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, instagramTokenURL, strings.NewReader(params.Encode()))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, instagramTokenURL, &body)
 	if err != nil {
 		return "", "", fmt.Errorf("build token request: %w", err)
 	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Content-Type", writer.FormDataContentType())
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -80,20 +83,20 @@ func (c *OAuthClient) ExchangeCode(ctx context.Context, code string) (string, st
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return "", "", fmt.Errorf("read token response: %w", err)
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return "", "", fmt.Errorf("token exchange failed (status %d): %s", resp.StatusCode, string(body))
+		return "", "", fmt.Errorf("token exchange failed (status %d): %s", resp.StatusCode, string(respBody))
 	}
 
 	var result struct {
 		AccessToken string `json:"access_token"`
 		UserID      string `json:"user_id"`
 	}
-	if err := json.Unmarshal(body, &result); err != nil {
+	if err := json.Unmarshal(respBody, &result); err != nil {
 		return "", "", fmt.Errorf("parse token response: %w", err)
 	}
 
