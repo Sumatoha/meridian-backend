@@ -24,7 +24,7 @@ func NewClient(apiKey string) *Client {
 	return &Client{
 		apiKey: apiKey,
 		httpClient: &http.Client{
-			Timeout: 120 * time.Second,
+			Timeout: 300 * time.Second, // 5 min — large generations need time
 		},
 	}
 }
@@ -47,8 +47,9 @@ type contentBlock struct {
 }
 
 type response struct {
-	Content []contentBlock `json:"content"`
-	Usage   struct {
+	Content    []contentBlock `json:"content"`
+	StopReason string         `json:"stop_reason"`
+	Usage      struct {
 		InputTokens  int `json:"input_tokens"`
 		OutputTokens int `json:"output_tokens"`
 	} `json:"usage"`
@@ -100,6 +101,12 @@ func (c *Client) Generate(ctx context.Context, systemPrompt, userPrompt string, 
 
 	if len(result.Content) == 0 {
 		return "", fmt.Errorf("ai: empty response content")
+	}
+
+	// Check if response was truncated due to max_tokens
+	if result.StopReason == "max_tokens" {
+		return "", fmt.Errorf("ai: response truncated (used %d/%d output tokens) — increase max_tokens or reduce plan size",
+			result.Usage.OutputTokens, maxTokens)
 	}
 
 	return result.Content[0].Text, nil
