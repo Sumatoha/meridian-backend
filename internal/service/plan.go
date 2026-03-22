@@ -58,19 +58,6 @@ func (s *PlanService) GeneratePlan(ctx context.Context, accountID uuid.UUID, sta
 	endDate := startDate.AddDate(0, 0, 29)
 	totalSlots := calculateTotalSlots(settings.PostingFrequency, 30)
 
-	// Create plan record
-	title := fmt.Sprintf("%s %d Plan", startDate.Month().String(), startDate.Year())
-	plan, err := s.queries.CreatePlan(ctx, repository.CreatePlanParams{
-		InstagramAccountID: accountID,
-		Title:              title,
-		StartDate:          startDate,
-		EndDate:            endDate,
-		TotalSlots:         int32(totalSlots),
-	})
-	if err != nil {
-		return uuid.Nil, fmt.Errorf("generate plan: create plan: %w", err)
-	}
-
 	// Build system prompt from settings
 	systemPrompt := s.buildPlanSystemPrompt(settings)
 	userPrompt := ai.BuildPlanUserPrompt(
@@ -79,19 +66,25 @@ func (s *PlanService) GeneratePlan(ctx context.Context, accountID uuid.UUID, sta
 		endDate.Format("2006-01-02"),
 	)
 
-	// Call AI — need large token limit for 30 detailed slots
+	// Call AI FIRST — before creating plan in DB
+	// This way, if AI fails, no empty plan is left in the database
+	s.logger.Info("calling AI for plan generation",
+		slog.String("account_id", accountID.String()),
+		slog.Int("total_slots", totalSlots),
+	)
+
 	rawResponse, err := s.aiClient.Generate(ctx, systemPrompt, userPrompt, 64000)
 	if err != nil {
 		return uuid.Nil, fmt.Errorf("generate plan: AI: %w", err)
 	}
 
 	s.logger.Info("AI response received",
-		slog.String("plan_id", plan.ID.String()),
+		slog.String("account_id", accountID.String()),
 		slog.Int("response_len", len(rawResponse)),
 		slog.String("response_preview", truncateStr(rawResponse, 300)),
 	)
 
-	// Parse slots
+	// Parse slots from AI response
 	slots, err := ai.ParseJSON[[]slotAIResponse](rawResponse)
 	if err != nil {
 		s.logger.Error("parse AI response failed",
@@ -101,9 +94,24 @@ func (s *PlanService) GeneratePlan(ctx context.Context, accountID uuid.UUID, sta
 		return uuid.Nil, fmt.Errorf("generate plan: parse slots: %w", err)
 	}
 
-	s.logger.Info("parsed slots from AI",
-		slog.Int("count", len(slots)),
-	)
+	s.logger.Info("parsed slots from AI", slog.Int("count", len(slots)))
+
+	if len(slots) == 0 {
+		return uuid.Nil, fmt.Errorf("generate plan: AI returned 0 slots")
+	}
+
+	// NOW create plan record — only after AI succeeded
+	title := fmt.Sprintf("%s %d Plan", startDate.Month().String(), startDate.Year())
+	plan, err := s.queries.CreatePlan(ctx, repository.CreatePlanParams{
+		InstagramAccountID: accountID,
+		Title:              title,
+		StartDate:          startDate,
+		EndDate:            endDate,
+		TotalSlots:         int32(len(slots)), // Use actual slot count from AI
+	})
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("generate plan: create plan: %w", err)
+	}
 
 	// Insert slots
 	s.logger.Info("inserting slots",

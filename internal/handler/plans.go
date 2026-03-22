@@ -44,26 +44,30 @@ func (h *PlanHandler) Generate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Use a detached context for AI generation — r.Context() cancels if
-	// the client disconnects, but we still want the plan to be created.
-	// 5 min timeout is generous for AI generation.
-	genCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer cancel()
+	// Background generation with detached context.
+	// Returns 202 immediately. Frontend polls GET /plans list until new plan appears with slots.
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer cancel()
 
-	planID, err := h.planSvc.GeneratePlan(genCtx, accountID, startDate)
-	if err != nil {
-		h.logger.Error("plan generation failed", slog.String("error", err.Error()))
-		respondError(w, http.StatusInternalServerError, "generation_failed", err.Error())
-		return
-	}
+		planID, err := h.planSvc.GeneratePlan(ctx, accountID, startDate)
+		if err != nil {
+			h.logger.Error("plan generation failed",
+				slog.String("account_id", accountID.String()),
+				slog.String("error", err.Error()),
+			)
+			return
+		}
+		h.logger.Info("plan generation completed",
+			slog.String("plan_id", planID.String()),
+			slog.String("account_id", accountID.String()),
+		)
+	}()
 
-	plan, err := h.planSvc.GetPlan(r.Context(), planID)
-	if err != nil {
-		respondError(w, http.StatusInternalServerError, "internal_error", "plan created but failed to fetch")
-		return
-	}
-
-	respondJSON(w, http.StatusCreated, plan)
+	respondJSON(w, http.StatusAccepted, map[string]string{
+		"status":  "generating",
+		"message": "Plan generation started. Poll GET /plans to check when ready.",
+	})
 }
 
 func (h *PlanHandler) List(w http.ResponseWriter, r *http.Request) {
