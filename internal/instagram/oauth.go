@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -41,7 +42,12 @@ func (c *OAuthClient) BuildAuthURL(state string) string {
 		"scope":         {"instagram_business_basic,instagram_business_content_publish"},
 		"state":         {state},
 	}
-	return instagramOAuthBase + "?" + params.Encode()
+	authURL := instagramOAuthBase + "?" + params.Encode()
+	slog.Info("oauth: built auth URL",
+		slog.String("redirect_uri", c.redirectURI),
+		slog.String("auth_url", authURL),
+	)
+	return authURL
 }
 
 // ExchangeCode exchanges an authorization code for a short-lived access token.
@@ -53,6 +59,12 @@ func (c *OAuthClient) ExchangeCode(ctx context.Context, code string) (string, st
 		"redirect_uri":  {c.redirectURI},
 		"code":          {code},
 	}
+
+	slog.Info("oauth: exchanging code",
+		slog.String("redirect_uri", c.redirectURI),
+		slog.String("token_url", instagramTokenURL),
+		slog.Int("code_len", len(code)),
+	)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, instagramTokenURL, strings.NewReader(params.Encode()))
 	if err != nil {

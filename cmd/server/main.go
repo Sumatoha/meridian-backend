@@ -238,6 +238,7 @@ func main() {
 	logger.Info("services initialized",
 		slog.Bool("has_anthropic_key", cfg.AnthropicAPIKey != ""),
 		slog.Bool("has_meta_app", cfg.MetaAppID != ""),
+		slog.String("meta_redirect_uri", cfg.MetaOAuthRedirectURI),
 		slog.Bool("has_dodo", cfg.DodoAPIKey != ""),
 		slog.Bool("has_kaspi", cfg.KaspiMerchantID != ""),
 		slog.String("cors_origin", allowedOrigin),
