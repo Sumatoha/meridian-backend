@@ -47,7 +47,7 @@ func (h *PlanHandler) Generate(w http.ResponseWriter, r *http.Request) {
 	// Background generation with detached context.
 	// Returns 202 immediately. Frontend polls GET /plans list until new plan appears with slots.
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 		defer cancel()
 
 		planID, err := h.planSvc.GeneratePlan(ctx, accountID, startDate)
