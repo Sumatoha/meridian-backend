@@ -12,7 +12,7 @@ import (
 
 const (
 	anthropicAPIURL = "https://api.anthropic.com/v1/messages"
-	model           = "claude-sonnet-4-20250514"
+	model           = "claude-sonnet-4-6-20250620"
 )
 
 type Client struct {
