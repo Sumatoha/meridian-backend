@@ -64,6 +64,8 @@ func (c *OAuthClient) ExchangeCode(ctx context.Context, code string) (string, st
 		slog.String("redirect_uri", c.redirectURI),
 		slog.String("token_url", instagramTokenURL),
 		slog.Int("code_len", len(code)),
+		slog.String("code_prefix", code[:min(20, len(code))]),
+		slog.String("code_suffix", code[max(0, len(code)-20):]),
 	)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, instagramTokenURL, strings.NewReader(params.Encode()))
