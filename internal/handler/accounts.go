@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 	"github.com/meridian/api/internal/auth"
 	"github.com/meridian/api/internal/dto"
 	"github.com/meridian/api/internal/service"
@@ -132,4 +133,66 @@ func (h *AccountHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// GetOAuthURL returns the Instagram OAuth authorization URL.
+func (h *AccountHandler) GetOAuthURL(w http.ResponseWriter, r *http.Request) {
+	userID := auth.UserID(r.Context())
+
+	var accountID *uuid.UUID
+	if raw := r.URL.Query().Get("account_id"); raw != "" {
+		id, ok := parseUUID(raw, h.logger)
+		if !ok {
+			respondError(w, http.StatusBadRequest, "invalid_id", "invalid account_id")
+			return
+		}
+		accountID = &id
+	}
+
+	url, err := h.svc.GetOAuthURL(r.Context(), userID, accountID)
+	if err != nil {
+		h.logger.Error("accounts.oauth_url: failed",
+			slog.String("error", err.Error()),
+			slog.String("user_id", userID.String()),
+		)
+		respondError(w, http.StatusInternalServerError, "internal_error", "failed to generate OAuth URL")
+		return
+	}
+
+	respondJSON(w, http.StatusOK, dto.OAuthURLResponse{URL: url})
+}
+
+// OAuthCallback handles the Instagram OAuth code exchange.
+func (h *AccountHandler) OAuthCallback(w http.ResponseWriter, r *http.Request) {
+	var req dto.OAuthCallbackRequest
+	if err := parseJSON(r, &req); err != nil {
+		respondError(w, http.StatusBadRequest, "invalid_body", "invalid request body")
+		return
+	}
+
+	if req.Code == "" || req.State == "" {
+		respondError(w, http.StatusBadRequest, "validation_error", "code and state are required")
+		return
+	}
+
+	result, err := h.svc.HandleOAuthCallback(r.Context(), req.Code, req.State)
+	if err != nil {
+		h.logger.Error("accounts.oauth_callback: failed",
+			slog.String("error", err.Error()),
+		)
+		respondError(w, http.StatusInternalServerError, "oauth_error", "failed to complete Instagram connection")
+		return
+	}
+
+	h.logger.Info("accounts.oauth_callback: success",
+		slog.String("account_id", result.Account.ID.String()),
+		slog.String("ig_username", result.Account.IGUsername),
+		slog.Bool("is_new", result.IsNew),
+	)
+
+	status := http.StatusOK
+	if result.IsNew {
+		status = http.StatusCreated
+	}
+	respondJSON(w, status, result)
 }

@@ -80,11 +80,13 @@ func main() {
 		os.Getenv("RAPIDAPI_BASE_URL"),
 	)
 	igPublisher := instagram.NewPublisher(cfg.MetaAppID, cfg.MetaAppSecret)
+	igOAuthClient := instagram.NewOAuthClient(cfg.MetaAppID, cfg.MetaAppSecret, cfg.MetaOAuthRedirectURI)
+	igReader := instagram.NewReader()
 	storageClient := storage.NewClient(cfg.SupabaseStorageURL, cfg.SupabaseServiceKey)
 
 	// Initialize services
-	accountSvc := service.NewAccountService(pool, queries)
-	analysisSvc := service.NewAnalysisService(queries, aiClient, igScraper, logger)
+	accountSvc := service.NewAccountService(pool, queries, igOAuthClient, cfg.MetaAppSecret)
+	analysisSvc := service.NewAnalysisService(queries, aiClient, igScraper, igReader, logger)
 	planSvc := service.NewPlanService(queries, aiClient, logger)
 	slotSvc := service.NewSlotService(queries, storageClient)
 	publisherSvc := service.NewPublisherService(queries, igPublisher, storageClient, logger)
@@ -186,7 +188,9 @@ func main() {
 		r.Use(authMW.Authenticate)
 		r.Use(userResolver)
 
-		// Accounts
+		// Accounts — OAuth routes first (before {id} param)
+		r.Get("/accounts/oauth/url", accountH.GetOAuthURL)
+		r.Post("/accounts/oauth/callback", accountH.OAuthCallback)
 		r.Post("/accounts", accountH.Create)
 		r.Get("/accounts", accountH.List)
 		r.Get("/accounts/{id}", accountH.Get)

@@ -6,8 +6,20 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"time"
 )
+
+var hashtagRegex = regexp.MustCompile(`#(\w+)`)
+
+// ExtractHashtags parses hashtags from a caption string.
+func ExtractHashtags(caption string) []string {
+	matches := hashtagRegex.FindAllString(caption, -1)
+	if matches == nil {
+		return []string{}
+	}
+	return matches
+}
 
 // Post represents a scraped Instagram post.
 type Post struct {

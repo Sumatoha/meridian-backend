@@ -3,21 +3,25 @@ package service
 import (
 	"context"
 	"fmt"
+	"log/slog"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/meridian/api/internal/auth"
 	"github.com/meridian/api/internal/dto"
+	"github.com/meridian/api/internal/instagram"
 	"github.com/meridian/api/internal/repository"
 )
 
 type AccountService struct {
-	db      *pgxpool.Pool
-	queries *repository.Queries
+	db          *pgxpool.Pool
+	queries     *repository.Queries
+	oauthClient *instagram.OAuthClient
+	appSecret   string
 }
 
-func NewAccountService(db *pgxpool.Pool, queries *repository.Queries) *AccountService {
-	return &AccountService{db: db, queries: queries}
+func NewAccountService(db *pgxpool.Pool, queries *repository.Queries, oauthClient *instagram.OAuthClient, appSecret string) *AccountService {
+	return &AccountService{db: db, queries: queries, oauthClient: oauthClient, appSecret: appSecret}
 }
 
 // EnsureUser creates or updates the internal user record from a Supabase JWT.
@@ -90,6 +94,93 @@ func (s *AccountService) GetAccountForUser(ctx context.Context, accountID uuid.U
 	}
 
 	return account, nil
+}
+
+// GetOAuthURL generates the Instagram OAuth authorization URL.
+func (s *AccountService) GetOAuthURL(ctx context.Context, userID uuid.UUID, accountID *uuid.UUID) (string, error) {
+	if s.oauthClient == nil {
+		return "", fmt.Errorf("oauth not configured")
+	}
+
+	state, err := instagram.EncodeState(userID, accountID, s.appSecret)
+	if err != nil {
+		return "", fmt.Errorf("encode oauth state: %w", err)
+	}
+
+	return s.oauthClient.BuildAuthURL(state), nil
+}
+
+// HandleOAuthCallback exchanges the authorization code for tokens and creates/updates the account.
+func (s *AccountService) HandleOAuthCallback(ctx context.Context, code, state string) (dto.OAuthCallbackResponse, error) {
+	if s.oauthClient == nil {
+		return dto.OAuthCallbackResponse{}, fmt.Errorf("oauth not configured")
+	}
+
+	// Verify and decode state
+	userID, accountID, err := instagram.DecodeState(state, s.appSecret)
+	if err != nil {
+		return dto.OAuthCallbackResponse{}, fmt.Errorf("invalid oauth state: %w", err)
+	}
+
+	// Exchange code for short-lived token
+	shortToken, _, err := s.oauthClient.ExchangeCode(ctx, code)
+	if err != nil {
+		return dto.OAuthCallbackResponse{}, fmt.Errorf("exchange code: %w", err)
+	}
+
+	// Swap for long-lived token (60 days)
+	longToken, expiresAt, err := s.oauthClient.ExchangeLongLivedToken(ctx, shortToken)
+	if err != nil {
+		return dto.OAuthCallbackResponse{}, fmt.Errorf("exchange long-lived token: %w", err)
+	}
+
+	// Fetch Instagram profile
+	igUserID, username, profilePicURL, err := s.oauthClient.GetProfile(ctx, longToken)
+	if err != nil {
+		return dto.OAuthCallbackResponse{}, fmt.Errorf("fetch profile: %w", err)
+	}
+
+	slog.Info("oauth: profile fetched",
+		slog.String("ig_user_id", igUserID),
+		slog.String("username", username),
+	)
+
+	var account repository.InstagramAccount
+	isNew := false
+
+	if accountID != nil {
+		// Connect OAuth to existing account
+		account, err = s.queries.ConnectOAuthToAccount(ctx, repository.ConnectOAuthToAccountParams{
+			ID:             *accountID,
+			IgUserID:       igUserID,
+			IgUsername:     username,
+			AccessToken:    longToken,
+			TokenExpiresAt: expiresAt,
+			ProfilePicUrl:  &profilePicURL,
+		})
+		if err != nil {
+			return dto.OAuthCallbackResponse{}, fmt.Errorf("connect oauth to account: %w", err)
+		}
+	} else {
+		// Create new OAuth account
+		account, err = s.queries.CreateOAuthAccount(ctx, repository.CreateOAuthAccountParams{
+			UserID:         userID,
+			IgUsername:     username,
+			IgUserID:       igUserID,
+			AccessToken:    longToken,
+			TokenExpiresAt: expiresAt,
+			ProfilePicUrl:  &profilePicURL,
+		})
+		if err != nil {
+			return dto.OAuthCallbackResponse{}, fmt.Errorf("create oauth account: %w", err)
+		}
+		isNew = true
+	}
+
+	return dto.OAuthCallbackResponse{
+		Account: accountToDTO(account),
+		IsNew:   isNew,
+	}, nil
 }
 
 func accountToDTO(a repository.InstagramAccount) dto.AccountResponse {

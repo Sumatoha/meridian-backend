@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/meridian/api/internal/ai"
 	"github.com/meridian/api/internal/dto"
+	"github.com/meridian/api/internal/instagram"
 	"github.com/meridian/api/internal/repository"
 	"github.com/meridian/api/internal/scraper"
 )
@@ -17,14 +18,16 @@ type AnalysisService struct {
 	queries  *repository.Queries
 	aiClient *ai.Client
 	scraper  *scraper.Scraper
+	igReader *instagram.Reader
 	logger   *slog.Logger
 }
 
-func NewAnalysisService(queries *repository.Queries, aiClient *ai.Client, sc *scraper.Scraper, logger *slog.Logger) *AnalysisService {
+func NewAnalysisService(queries *repository.Queries, aiClient *ai.Client, sc *scraper.Scraper, igReader *instagram.Reader, logger *slog.Logger) *AnalysisService {
 	return &AnalysisService{
 		queries:  queries,
 		aiClient: aiClient,
 		scraper:  sc,
+		igReader: igReader,
 		logger:   logger,
 	}
 }
@@ -50,10 +53,30 @@ func (s *AnalysisService) AnalyzeProfile(ctx context.Context, accountID uuid.UUI
 		niche = *settings.Niche
 	}
 
-	// Step 1: Scrape profile
-	profileInfo, posts, err := s.scraper.ScrapeProfile(ctx, account.IgUsername)
-	if err != nil {
-		return fmt.Errorf("analysis: scrape: %w", err)
+	// Step 1: Fetch profile data (Graph API if OAuth, RapidAPI fallback)
+	var profileInfo scraper.ProfileInfo
+	var posts []scraper.Post
+
+	if account.IsOauthConnected && account.AccessToken != nil && account.IgUserID != nil {
+		s.logger.Info("analysis: using Graph API",
+			slog.String("account_id", accountID.String()),
+		)
+		profileInfo, err = s.igReader.FetchProfile(ctx, *account.IgUserID, *account.AccessToken)
+		if err != nil {
+			return fmt.Errorf("analysis: graph api profile: %w", err)
+		}
+		posts, err = s.igReader.FetchPosts(ctx, *account.IgUserID, *account.AccessToken, 30)
+		if err != nil {
+			return fmt.Errorf("analysis: graph api posts: %w", err)
+		}
+	} else {
+		s.logger.Info("analysis: using RapidAPI scraper",
+			slog.String("account_id", accountID.String()),
+		)
+		profileInfo, posts, err = s.scraper.ScrapeProfile(ctx, account.IgUsername)
+		if err != nil {
+			return fmt.Errorf("analysis: scrape: %w", err)
+		}
 	}
 
 	// Update profile info

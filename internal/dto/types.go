@@ -23,8 +23,18 @@ type CreateAccountRequest struct {
 	IGUsername string `json:"ig_username"`
 }
 
-type OAuthAccountRequest struct {
-	Code string `json:"code"`
+type OAuthURLResponse struct {
+	URL string `json:"url"`
+}
+
+type OAuthCallbackRequest struct {
+	Code  string `json:"code"`
+	State string `json:"state"`
+}
+
+type OAuthCallbackResponse struct {
+	Account AccountResponse `json:"account"`
+	IsNew   bool            `json:"is_new"`
 }
 
 type AccountResponse struct {

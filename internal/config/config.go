@@ -14,8 +14,9 @@ type Config struct {
 	SupabaseStorageURL string
 	SupabaseServiceKey string
 	AnthropicAPIKey    string
-	MetaAppID          string
-	MetaAppSecret      string
+	MetaAppID            string
+	MetaAppSecret        string
+	MetaOAuthRedirectURI string
 	DodoAPIKey         string
 	DodoWebhookSecret  string
 	KaspiMerchantID    string
@@ -41,8 +42,9 @@ func Load() (Config, error) {
 		SupabaseStorageURL: os.Getenv("SUPABASE_STORAGE_URL"),
 		SupabaseServiceKey: os.Getenv("SUPABASE_SERVICE_ROLE_KEY"),
 		AnthropicAPIKey:    os.Getenv("ANTHROPIC_API_KEY"),
-		MetaAppID:          os.Getenv("META_APP_ID"),
-		MetaAppSecret:      os.Getenv("META_APP_SECRET"),
+		MetaAppID:            os.Getenv("META_APP_ID"),
+		MetaAppSecret:        os.Getenv("META_APP_SECRET"),
+		MetaOAuthRedirectURI: os.Getenv("META_OAUTH_REDIRECT_URI"),
 		DodoAPIKey:         os.Getenv("DODO_API_KEY"),
 		DodoWebhookSecret:  os.Getenv("DODO_WEBHOOK_SECRET"),
 		KaspiMerchantID:    os.Getenv("KASPI_MERCHANT_ID"),

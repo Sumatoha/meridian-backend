@@ -26,6 +26,55 @@ func (q *Queries) CreateAccount(ctx context.Context, arg CreateAccountParams) (I
 	return a, err
 }
 
+type CreateOAuthAccountParams struct {
+	UserID         uuid.UUID
+	IgUsername     string
+	IgUserID       string
+	AccessToken    string
+	TokenExpiresAt time.Time
+	ProfilePicUrl  *string
+}
+
+func (q *Queries) CreateOAuthAccount(ctx context.Context, arg CreateOAuthAccountParams) (InstagramAccount, error) {
+	row := q.db.QueryRow(ctx,
+		`INSERT INTO instagram_accounts (user_id, ig_username, ig_user_id, access_token, token_expires_at, profile_pic_url, is_oauth_connected)
+		VALUES ($1, $2, $3, $4, $5, $6, TRUE)
+		RETURNING id, user_id, ig_username, ig_user_id, access_token, token_expires_at,
+		profile_pic_url, followers_count, is_oauth_connected, created_at, updated_at`,
+		arg.UserID, arg.IgUsername, arg.IgUserID, arg.AccessToken, arg.TokenExpiresAt, arg.ProfilePicUrl,
+	)
+	var a InstagramAccount
+	err := row.Scan(&a.ID, &a.UserID, &a.IgUsername, &a.IgUserID, &a.AccessToken, &a.TokenExpiresAt,
+		&a.ProfilePicUrl, &a.FollowersCount, &a.IsOauthConnected, &a.CreatedAt, &a.UpdatedAt)
+	return a, err
+}
+
+type ConnectOAuthToAccountParams struct {
+	ID             uuid.UUID
+	IgUserID       string
+	IgUsername     string
+	AccessToken    string
+	TokenExpiresAt time.Time
+	ProfilePicUrl  *string
+}
+
+func (q *Queries) ConnectOAuthToAccount(ctx context.Context, arg ConnectOAuthToAccountParams) (InstagramAccount, error) {
+	row := q.db.QueryRow(ctx,
+		`UPDATE instagram_accounts SET
+			ig_user_id = $2, ig_username = $3, access_token = $4,
+			token_expires_at = $5, profile_pic_url = $6,
+			is_oauth_connected = TRUE, updated_at = NOW()
+		WHERE id = $1
+		RETURNING id, user_id, ig_username, ig_user_id, access_token, token_expires_at,
+		profile_pic_url, followers_count, is_oauth_connected, created_at, updated_at`,
+		arg.ID, arg.IgUserID, arg.IgUsername, arg.AccessToken, arg.TokenExpiresAt, arg.ProfilePicUrl,
+	)
+	var a InstagramAccount
+	err := row.Scan(&a.ID, &a.UserID, &a.IgUsername, &a.IgUserID, &a.AccessToken, &a.TokenExpiresAt,
+		&a.ProfilePicUrl, &a.FollowersCount, &a.IsOauthConnected, &a.CreatedAt, &a.UpdatedAt)
+	return a, err
+}
+
 func (q *Queries) GetAccountsByUserID(ctx context.Context, userID uuid.UUID) ([]InstagramAccount, error) {
 	rows, err := q.db.Query(ctx,
 		`SELECT id, user_id, ig_username, ig_user_id, access_token, token_expires_at,
