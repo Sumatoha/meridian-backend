@@ -55,7 +55,8 @@ func (h *AnalysisHandler) GetAnalysis(w http.ResponseWriter, r *http.Request) {
 
 	result, err := h.analysisSvc.GetLatestAnalysis(r.Context(), accountID)
 	if err != nil {
-		respondError(w, http.StatusNotFound, "not_found", "no analysis found")
+		// Return 200 with null data instead of 404 — avoids console errors during polling
+		respondJSON(w, http.StatusOK, nil)
 		return
 	}
 
