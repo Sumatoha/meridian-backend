@@ -48,6 +48,8 @@ func main() {
 	}))
 	slog.SetDefault(logger)
 
+	logger.Info("server version", slog.String("build", "2026-03-23-v2-sync-gen"))
+
 	// Load config
 	cfg, err := config.Load()
 	if err != nil {
