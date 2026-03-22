@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
 
@@ -34,9 +35,10 @@ func (h *AnalysisHandler) Analyze(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// TODO: Enqueue River job instead of synchronous execution
+	// Run analysis in background — use detached context since HTTP response is sent immediately
 	go func() {
-		if err := h.analysisSvc.AnalyzeProfile(r.Context(), accountID); err != nil {
+		ctx := context.Background()
+		if err := h.analysisSvc.AnalyzeProfile(ctx, accountID); err != nil {
 			h.logger.Error("analysis failed", slog.String("account_id", accountID.String()), slog.String("error", err.Error()))
 		}
 	}()
