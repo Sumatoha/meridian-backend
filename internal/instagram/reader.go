@@ -12,6 +12,9 @@ import (
 	"github.com/meridian/api/internal/scraper"
 )
 
+// Instagram Login tokens work on graph.instagram.com, NOT graph.facebook.com
+const instagramGraphAPIBase = "https://graph.instagram.com/v21.0"
+
 // Reader fetches Instagram data via the Graph API for OAuth-connected accounts.
 type Reader struct {
 	httpClient *http.Client
@@ -30,7 +33,7 @@ func (r *Reader) FetchProfile(ctx context.Context, igUserID, accessToken string)
 		"access_token": {accessToken},
 	}
 
-	reqURL := fmt.Sprintf("%s/%s?%s", graphAPIBase, igUserID, params.Encode())
+	reqURL := fmt.Sprintf("%s/%s?%s", instagramGraphAPIBase, igUserID, params.Encode())
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {
 		return scraper.ProfileInfo{}, fmt.Errorf("build profile request: %w", err)
@@ -75,7 +78,7 @@ func (r *Reader) FetchPosts(ctx context.Context, igUserID, accessToken string, l
 		"access_token": {accessToken},
 	}
 
-	reqURL := fmt.Sprintf("%s/%s/media?%s", graphAPIBase, igUserID, params.Encode())
+	reqURL := fmt.Sprintf("%s/%s/media?%s", instagramGraphAPIBase, igUserID, params.Encode())
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("build posts request: %w", err)
