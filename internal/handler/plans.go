@@ -1,7 +1,6 @@
 package handler
 
 import (
-	"context"
 	"log/slog"
 	"net/http"
 	"time"
@@ -44,15 +43,23 @@ func (h *PlanHandler) Generate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Run plan generation in background — detached context since response is sent immediately
-	go func() {
-		ctx := context.Background()
-		if _, err := h.planSvc.GeneratePlan(ctx, accountID, startDate); err != nil {
-			h.logger.Error("plan generation failed", slog.String("error", err.Error()))
-		}
-	}()
+	// Synchronous generation — client waits for the full plan
+	// AI call takes 1-3 min, but this is more reliable than goroutines
+	// that get killed on redeploy
+	planID, err := h.planSvc.GeneratePlan(r.Context(), accountID, startDate)
+	if err != nil {
+		h.logger.Error("plan generation failed", slog.String("error", err.Error()))
+		respondError(w, http.StatusInternalServerError, "generation_failed", err.Error())
+		return
+	}
 
-	respondJSON(w, http.StatusAccepted, dto.JobResponse{JobID: accountID})
+	plan, err := h.planSvc.GetPlan(r.Context(), planID)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "internal_error", "plan created but failed to fetch")
+		return
+	}
+
+	respondJSON(w, http.StatusCreated, plan)
 }
 
 func (h *PlanHandler) List(w http.ResponseWriter, r *http.Request) {
