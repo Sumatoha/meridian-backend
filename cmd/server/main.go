@@ -105,7 +105,7 @@ func main() {
 	// Auth middleware — JWKS (RS256) with HMAC fallback
 	jwksURL := ""
 	if cfg.SupabaseURL != "" {
-		jwksURL = strings.TrimRight(cfg.SupabaseURL, "/") + "/.well-known/jwks.json"
+		jwksURL = strings.TrimRight(cfg.SupabaseURL, "/") + "/auth/v1/.well-known/jwks.json"
 	}
 	authMW, err := auth.NewMiddleware(jwksURL, cfg.SupabaseJWTSecret)
 	if err != nil {
