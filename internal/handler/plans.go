@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
 	"time"
@@ -43,9 +44,10 @@ func (h *PlanHandler) Generate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// TODO: Enqueue River job for async generation
+	// Run plan generation in background — detached context since response is sent immediately
 	go func() {
-		if _, err := h.planSvc.GeneratePlan(r.Context(), accountID, startDate); err != nil {
+		ctx := context.Background()
+		if _, err := h.planSvc.GeneratePlan(ctx, accountID, startDate); err != nil {
 			h.logger.Error("plan generation failed", slog.String("error", err.Error()))
 		}
 	}()
