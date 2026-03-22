@@ -7,5 +7,8 @@
 ## JWT secret whitespace causes 401
 Railway env vars can have trailing newlines or spaces from copy-paste. Always `strings.TrimSpace()` the JWT secret before using it. Log `secret_len` on startup to catch this early.
 
+## Goroutine with r.Context() cancels immediately after 202
+When spawning a goroutine from an HTTP handler that returns early (202 Accepted), never pass `r.Context()` — it cancels when the response is sent. Use `context.Background()` for background work.
+
 ## Supabase JWKS endpoint path
 Supabase serves JWKS at `/auth/v1/.well-known/jwks.json`, NOT at `/.well-known/jwks.json`. The correct URL is `{SUPABASE_URL}/auth/v1/.well-known/jwks.json`. Discoverable via OpenID config at `/auth/v1/.well-known/openid-configuration`.

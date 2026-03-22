@@ -26,10 +26,32 @@ func NewPlanService(queries *repository.Queries, aiClient *ai.Client, logger *sl
 
 // GeneratePlan creates a new content plan using AI.
 func (s *PlanService) GeneratePlan(ctx context.Context, accountID uuid.UUID, startDate time.Time) (uuid.UUID, error) {
-	// Load settings
+	// Load settings (use defaults if not configured yet)
 	settings, err := s.queries.GetBrandSettings(ctx, accountID)
 	if err != nil {
-		return uuid.Nil, fmt.Errorf("generate plan: get settings: %w", err)
+		s.logger.Warn("no brand settings found, using defaults for plan generation",
+			slog.String("account_id", accountID.String()),
+		)
+		settings = repository.BrandSetting{
+			ContentGoal:           "reach",
+			ContentLanguage:       "ru",
+			PostingFrequency:      "daily",
+			MixUseful:             40,
+			MixSelling:            25,
+			MixPersonal:           20,
+			MixEntertaining:       15,
+			FormatReelsEnabled:    true,
+			FormatReelsPct:        40,
+			FormatCarouselEnabled: true,
+			FormatCarouselPct:     30,
+			FormatPhotoEnabled:    true,
+			FormatPhotoPct:        30,
+			ToneTraits:            []string{"friendly"},
+			BannedTopics:          []string{},
+			BannedWords:           []string{},
+			CompetitorNames:       []string{},
+			ContentRestrictions:   []string{},
+		}
 	}
 
 	// Calculate end date (30 days) and total slots based on frequency
