@@ -128,7 +128,11 @@ func main() {
 
 			userID, err := accountSvc.EnsureUser(r.Context(), supabaseUID, "")
 			if err != nil {
-				logger.Error("user resolution failed", slog.String("error", err.Error()))
+				logger.Error("user resolution failed",
+					slog.String("error", err.Error()),
+					slog.String("supabase_uid", supabaseUID.String()),
+					slog.String("path", r.URL.Path),
+				)
 				http.Error(w, `{"error":{"code":"internal_error","message":"user resolution failed"}}`, http.StatusInternalServerError)
 				return
 			}
