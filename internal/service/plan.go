@@ -60,45 +60,78 @@ func (s *PlanService) GeneratePlan(ctx context.Context, accountID uuid.UUID, sta
 
 	// Build system prompt from settings
 	systemPrompt := s.buildPlanSystemPrompt(settings)
-	userPrompt := ai.BuildPlanUserPrompt(
-		totalSlots,
-		startDate.Format("2006-01-02"),
-		endDate.Format("2006-01-02"),
-	)
 
-	// Call AI FIRST — before creating plan in DB
-	// This way, if AI fails, no empty plan is left in the database
+	// Generate slots in batches to avoid AI timeout
+	// Each batch generates ~10 slots which takes ~1-2 min
 	s.logger.Info("calling AI for plan generation",
 		slog.String("account_id", accountID.String()),
 		slog.Int("total_slots", totalSlots),
 	)
 
-	rawResponse, err := s.aiClient.Generate(ctx, systemPrompt, userPrompt, 64000)
-	if err != nil {
-		return uuid.Nil, fmt.Errorf("generate plan: AI: %w", err)
-	}
+	var allSlots []slotAIResponse
+	batchSize := 10
+	for batchStart := 0; batchStart < totalSlots; batchStart += batchSize {
+		batchEnd := batchStart + batchSize
+		if batchEnd > totalSlots {
+			batchEnd = totalSlots
+		}
+		batchCount := batchEnd - batchStart
 
-	s.logger.Info("AI response received",
-		slog.String("account_id", accountID.String()),
-		slog.Int("response_len", len(rawResponse)),
-		slog.String("response_preview", truncateStr(rawResponse, 300)),
-	)
+		// Calculate dates for this batch
+		batchStartDate := startDate.AddDate(0, 0, batchStart)
+		batchEndDate := startDate.AddDate(0, 0, batchEnd-1)
 
-	// Parse slots from AI response
-	slots, err := ai.ParseJSON[[]slotAIResponse](rawResponse)
-	if err != nil {
-		s.logger.Error("parse AI response failed",
-			slog.String("error", err.Error()),
-			slog.String("raw_response", truncateStr(rawResponse, 1000)),
+		userPrompt := ai.BuildPlanUserPrompt(
+			batchCount,
+			batchStartDate.Format("2006-01-02"),
+			batchEndDate.Format("2006-01-02"),
 		)
-		return uuid.Nil, fmt.Errorf("generate plan: parse slots: %w", err)
+
+		s.logger.Info("AI batch request",
+			slog.Int("batch", batchStart/batchSize+1),
+			slog.Int("slots", batchCount),
+			slog.String("from", batchStartDate.Format("2006-01-02")),
+			slog.String("to", batchEndDate.Format("2006-01-02")),
+		)
+
+		rawResponse, err := s.aiClient.Generate(ctx, systemPrompt, userPrompt, 16000)
+		if err != nil {
+			return uuid.Nil, fmt.Errorf("generate plan: AI batch %d: %w", batchStart/batchSize+1, err)
+		}
+
+		s.logger.Info("AI batch response received",
+			slog.Int("batch", batchStart/batchSize+1),
+			slog.Int("response_len", len(rawResponse)),
+		)
+
+		batchSlots, err := ai.ParseJSON[[]slotAIResponse](rawResponse)
+		if err != nil {
+			s.logger.Error("parse AI batch failed",
+				slog.Int("batch", batchStart/batchSize+1),
+				slog.String("error", err.Error()),
+				slog.String("raw_response", truncateStr(rawResponse, 500)),
+			)
+			return uuid.Nil, fmt.Errorf("generate plan: parse batch %d: %w", batchStart/batchSize+1, err)
+		}
+
+		// Fix day numbers to be sequential across batches
+		for i := range batchSlots {
+			batchSlots[i].DayNumber = batchStart + i + 1
+		}
+
+		allSlots = append(allSlots, batchSlots...)
+		s.logger.Info("batch parsed",
+			slog.Int("batch", batchStart/batchSize+1),
+			slog.Int("slots", len(batchSlots)),
+			slog.Int("total_so_far", len(allSlots)),
+		)
 	}
 
-	s.logger.Info("parsed slots from AI", slog.Int("count", len(slots)))
-
-	if len(slots) == 0 {
+	if len(allSlots) == 0 {
 		return uuid.Nil, fmt.Errorf("generate plan: AI returned 0 slots")
 	}
+
+	slots := allSlots
 
 	// NOW create plan record — only after AI succeeded
 	title := fmt.Sprintf("%s %d Plan", startDate.Month().String(), startDate.Year())
