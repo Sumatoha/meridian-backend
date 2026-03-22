@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -27,6 +28,18 @@ import (
 	"github.com/meridian/api/internal/service"
 	"github.com/meridian/api/internal/storage"
 )
+
+func maskDSN(dsn string) string {
+	// Show host only, hide credentials
+	if idx := strings.Index(dsn, "@"); idx != -1 {
+		rest := dsn[idx:]
+		if end := strings.Index(rest, "/"); end != -1 {
+			return "***" + rest[:end]
+		}
+		return "***" + rest
+	}
+	return "***"
+}
 
 func main() {
 	// Structured JSON logger
@@ -55,7 +68,7 @@ func main() {
 		logger.Error("failed to ping database", slog.String("error", err.Error()))
 		os.Exit(1)
 	}
-	logger.Info("database connected")
+	logger.Info("database connected", slog.String("host", maskDSN(cfg.DatabaseURL)))
 
 	// Initialize repository
 	queries := repository.New(pool)
@@ -204,6 +217,14 @@ func main() {
 		r.Post("/billing/checkout", billingH.Checkout)
 		r.Get("/billing/subscription", billingH.GetSubscription)
 	})
+
+	logger.Info("services initialized",
+		slog.Bool("has_anthropic_key", cfg.AnthropicAPIKey != ""),
+		slog.Bool("has_meta_app", cfg.MetaAppID != ""),
+		slog.Bool("has_dodo", cfg.DodoAPIKey != ""),
+		slog.Bool("has_kaspi", cfg.KaspiMerchantID != ""),
+		slog.String("cors_origin", allowedOrigin),
+	)
 
 	// Start server
 	addr := fmt.Sprintf(":%d", cfg.Port)
