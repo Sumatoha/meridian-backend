@@ -15,7 +15,7 @@ import (
 const createPlan = `-- name: CreatePlan :one
 INSERT INTO content_plans (instagram_account_id, title, start_date, end_date, total_slots)
 VALUES ($1, $2, $3, $4, $5)
-RETURNING id, instagram_account_id, title, start_date, end_date, status, total_slots, approved_slots, published_slots, created_at, updated_at
+RETURNING id, instagram_account_id, title, start_date, end_date, status, total_slots, approved_slots, published_slots, created_at, updated_at, share_token
 `
 
 type CreatePlanParams struct {
@@ -47,6 +47,7 @@ func (q *Queries) CreatePlan(ctx context.Context, arg CreatePlanParams) (Content
 		&i.PublishedSlots,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ShareToken,
 	)
 	return i, err
 }
@@ -61,7 +62,7 @@ func (q *Queries) DeletePlan(ctx context.Context, id uuid.UUID) error {
 }
 
 const getPlanByID = `-- name: GetPlanByID :one
-SELECT id, instagram_account_id, title, start_date, end_date, status, total_slots, approved_slots, published_slots, created_at, updated_at FROM content_plans WHERE id = $1
+SELECT id, instagram_account_id, title, start_date, end_date, status, total_slots, approved_slots, published_slots, created_at, updated_at, share_token FROM content_plans WHERE id = $1
 `
 
 func (q *Queries) GetPlanByID(ctx context.Context, id uuid.UUID) (ContentPlan, error) {
@@ -79,12 +80,37 @@ func (q *Queries) GetPlanByID(ctx context.Context, id uuid.UUID) (ContentPlan, e
 		&i.PublishedSlots,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ShareToken,
+	)
+	return i, err
+}
+
+const getPlanByShareToken = `-- name: GetPlanByShareToken :one
+SELECT id, instagram_account_id, title, start_date, end_date, status, total_slots, approved_slots, published_slots, created_at, updated_at, share_token FROM content_plans WHERE share_token = $1
+`
+
+func (q *Queries) GetPlanByShareToken(ctx context.Context, shareToken *string) (ContentPlan, error) {
+	row := q.db.QueryRow(ctx, getPlanByShareToken, shareToken)
+	var i ContentPlan
+	err := row.Scan(
+		&i.ID,
+		&i.InstagramAccountID,
+		&i.Title,
+		&i.StartDate,
+		&i.EndDate,
+		&i.Status,
+		&i.TotalSlots,
+		&i.ApprovedSlots,
+		&i.PublishedSlots,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.ShareToken,
 	)
 	return i, err
 }
 
 const getPlansByAccountID = `-- name: GetPlansByAccountID :many
-SELECT id, instagram_account_id, title, start_date, end_date, status, total_slots, approved_slots, published_slots, created_at, updated_at FROM content_plans
+SELECT id, instagram_account_id, title, start_date, end_date, status, total_slots, approved_slots, published_slots, created_at, updated_at, share_token FROM content_plans
 WHERE instagram_account_id = $1
 ORDER BY created_at DESC
 `
@@ -110,6 +136,7 @@ func (q *Queries) GetPlansByAccountID(ctx context.Context, instagramAccountID uu
 			&i.PublishedSlots,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.ShareToken,
 		); err != nil {
 			return nil, err
 		}
@@ -119,6 +146,47 @@ func (q *Queries) GetPlansByAccountID(ctx context.Context, instagramAccountID uu
 		return nil, err
 	}
 	return items, nil
+}
+
+const revokePlanShareToken = `-- name: RevokePlanShareToken :exec
+UPDATE content_plans SET share_token = NULL, updated_at = NOW()
+WHERE id = $1
+`
+
+func (q *Queries) RevokePlanShareToken(ctx context.Context, id uuid.UUID) error {
+	_, err := q.db.Exec(ctx, revokePlanShareToken, id)
+	return err
+}
+
+const setPlanShareToken = `-- name: SetPlanShareToken :one
+UPDATE content_plans SET share_token = $2, updated_at = NOW()
+WHERE id = $1
+RETURNING id, instagram_account_id, title, start_date, end_date, status, total_slots, approved_slots, published_slots, created_at, updated_at, share_token
+`
+
+type SetPlanShareTokenParams struct {
+	ID         uuid.UUID `json:"id"`
+	ShareToken *string   `json:"share_token"`
+}
+
+func (q *Queries) SetPlanShareToken(ctx context.Context, arg SetPlanShareTokenParams) (ContentPlan, error) {
+	row := q.db.QueryRow(ctx, setPlanShareToken, arg.ID, arg.ShareToken)
+	var i ContentPlan
+	err := row.Scan(
+		&i.ID,
+		&i.InstagramAccountID,
+		&i.Title,
+		&i.StartDate,
+		&i.EndDate,
+		&i.Status,
+		&i.TotalSlots,
+		&i.ApprovedSlots,
+		&i.PublishedSlots,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.ShareToken,
+	)
+	return i, err
 }
 
 const updatePlanCounters = `-- name: UpdatePlanCounters :exec
@@ -137,7 +205,7 @@ func (q *Queries) UpdatePlanCounters(ctx context.Context, planID uuid.UUID) erro
 const updatePlanStatus = `-- name: UpdatePlanStatus :one
 UPDATE content_plans SET status = $2, updated_at = NOW()
 WHERE id = $1
-RETURNING id, instagram_account_id, title, start_date, end_date, status, total_slots, approved_slots, published_slots, created_at, updated_at
+RETURNING id, instagram_account_id, title, start_date, end_date, status, total_slots, approved_slots, published_slots, created_at, updated_at, share_token
 `
 
 type UpdatePlanStatusParams struct {
@@ -160,6 +228,7 @@ func (q *Queries) UpdatePlanStatus(ctx context.Context, arg UpdatePlanStatusPara
 		&i.PublishedSlots,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ShareToken,
 	)
 	return i, err
 }

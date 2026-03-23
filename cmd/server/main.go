@@ -91,6 +91,8 @@ func main() {
 	slotSvc := service.NewSlotService(queries, storageClient, tierSvc)
 	publisherSvc := service.NewPublisherService(queries, igPublisher, storageClient, logger)
 	billingSvc := service.NewBillingService(queries, cfg.DodoAPIKey, cfg.KaspiMerchantID, cfg.KaspiSecret)
+	exportSvc := service.NewExportService(queries, tierSvc)
+	sharingSvc := service.NewSharingService(queries, tierSvc)
 
 	// Start publisher ticker — checks every 5 minutes for due slots
 	go publisherSvc.RunTicker(ctx, 5*time.Minute)
@@ -104,6 +106,8 @@ func main() {
 	slotH := handler.NewSlotHandler(slotSvc, logger)
 	mediaH := handler.NewMediaHandler(slotSvc, storageClient, queries, logger)
 	billingH := handler.NewBillingHandler(billingSvc, logger)
+	exportH := handler.NewExportHandler(exportSvc, logger)
+	sharingH := handler.NewSharingHandler(sharingSvc, logger)
 	publicH := handler.NewPublicHandler(analysisSvc, queries, logger)
 
 	// Auth middleware — JWKS (RS256) with HMAC fallback
@@ -179,6 +183,7 @@ func main() {
 		}))
 		r.Post("/audit", publicH.StartAudit)
 		r.Get("/audit/{job_id}", publicH.GetAudit)
+		r.Get("/shared/plan/{token}", sharingH.GetSharedPlan)
 	})
 
 	// Billing webhooks (no auth, verified by signature)
@@ -218,6 +223,9 @@ func main() {
 		r.Get("/plans/{plan_id}", planH.Get)
 		r.Patch("/plans/{plan_id}", planH.Update)
 		r.Delete("/plans/{plan_id}", planH.Delete)
+		r.Get("/plans/{plan_id}/export", exportH.Export)
+		r.Post("/plans/{plan_id}/share", sharingH.CreateShareLink)
+		r.Delete("/plans/{plan_id}/share", sharingH.RevokeShareLink)
 
 		// Slots
 		r.Get("/plans/{plan_id}/slots", slotH.List)

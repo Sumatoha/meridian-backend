@@ -86,6 +86,7 @@ type ContentPlan struct {
 	PublishedSlots     int32     `json:"published_slots"`
 	CreatedAt          time.Time `json:"created_at"`
 	UpdatedAt          time.Time `json:"updated_at"`
+	ShareToken         *string   `json:"share_token"`
 }
 
 type ContentSlot struct {

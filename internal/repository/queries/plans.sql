@@ -25,3 +25,15 @@ WHERE id = $1;
 
 -- name: DeletePlan :exec
 DELETE FROM content_plans WHERE id = $1;
+
+-- name: SetPlanShareToken :one
+UPDATE content_plans SET share_token = $2, updated_at = NOW()
+WHERE id = $1
+RETURNING *;
+
+-- name: RevokePlanShareToken :exec
+UPDATE content_plans SET share_token = NULL, updated_at = NOW()
+WHERE id = $1;
+
+-- name: GetPlanByShareToken :one
+SELECT * FROM content_plans WHERE share_token = $1;

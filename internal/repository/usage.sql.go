@@ -32,7 +32,7 @@ func (q *Queries) DeletePlansByAccountID(ctx context.Context, instagramAccountID
 }
 
 const getActivePlanByAccountID = `-- name: GetActivePlanByAccountID :one
-SELECT id, instagram_account_id, title, start_date, end_date, status, total_slots, approved_slots, published_slots, created_at, updated_at FROM content_plans
+SELECT id, instagram_account_id, title, start_date, end_date, status, total_slots, approved_slots, published_slots, created_at, updated_at, share_token FROM content_plans
 WHERE instagram_account_id = $1
 ORDER BY created_at DESC
 LIMIT 1
@@ -53,6 +53,7 @@ func (q *Queries) GetActivePlanByAccountID(ctx context.Context, instagramAccount
 		&i.PublishedSlots,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ShareToken,
 	)
 	return i, err
 }
