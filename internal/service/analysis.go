@@ -165,6 +165,65 @@ func (s *AnalysisService) AnalyzeProfile(ctx context.Context, accountID uuid.UUI
 	return nil
 }
 
+// AnalyzePublic scrapes a public profile and runs AI analysis without an account.
+// Used for the free landing-page audit. Does not store results in the database.
+func (s *AnalysisService) AnalyzePublic(ctx context.Context, username string) (dto.PublicAuditResult, error) {
+	s.logger.Info("public audit: starting", slog.String("username", username))
+
+	// Scrape via direct API → headless fallback
+	_, posts, err := s.scraper.ScrapeProfile(ctx, username)
+	if err != nil {
+		return dto.PublicAuditResult{}, fmt.Errorf("public audit: scrape: %w", err)
+	}
+
+	if len(posts) == 0 {
+		return dto.PublicAuditResult{}, fmt.Errorf("public audit: no posts found for @%s", username)
+	}
+
+	// Build AI prompt
+	postsJSON, err := json.Marshal(posts)
+	if err != nil {
+		return dto.PublicAuditResult{}, fmt.Errorf("public audit: marshal posts: %w", err)
+	}
+
+	systemPrompt, userPrompt := ai.BuildAnalysisPrompts("ru", username, "general", string(postsJSON))
+
+	// Call AI
+	rawResponse, err := s.aiClient.Generate(ctx, systemPrompt, userPrompt, 4096)
+	if err != nil {
+		return dto.PublicAuditResult{}, fmt.Errorf("public audit: AI generate: %w", err)
+	}
+
+	// Parse response
+	dna, err := ai.ParseJSON[brandDnaAIResponse](rawResponse)
+	if err != nil {
+		return dto.PublicAuditResult{}, fmt.Errorf("public audit: parse AI response: %w", err)
+	}
+
+	// Cap for free audit
+	strengths := dna.Strengths
+	if len(strengths) > 3 {
+		strengths = strengths[:3]
+	}
+	recommendations := dna.Recommendations
+	if len(recommendations) > 3 {
+		recommendations = recommendations[:3]
+	}
+
+	s.logger.Info("public audit: completed",
+		slog.String("username", username),
+		slog.Int("score", dna.Score),
+	)
+
+	return dto.PublicAuditResult{
+		ID:              uuid.New().String(),
+		Username:        username,
+		Score:           dna.Score,
+		Strengths:       strengths,
+		Recommendations: recommendations,
+	}, nil
+}
+
 // GetLatestAnalysis returns the most recent Brand DNA for an account.
 func (s *AnalysisService) GetLatestAnalysis(ctx context.Context, accountID uuid.UUID) (dto.BrandDnaDTO, error) {
 	dna, err := s.queries.GetLatestBrandDna(ctx, accountID)

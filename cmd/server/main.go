@@ -77,10 +77,7 @@ func main() {
 
 	// Initialize external clients
 	aiClient := ai.NewClient(cfg.AnthropicAPIKey)
-	igScraper := scraper.NewScraper(
-		os.Getenv("RAPIDAPI_KEY"),
-		os.Getenv("RAPIDAPI_BASE_URL"),
-	)
+	igScraper := scraper.NewScraper(logger)
 	igPublisher := instagram.NewPublisher(cfg.MetaAppID, cfg.MetaAppSecret)
 	igOAuthClient := instagram.NewOAuthClient(cfg.MetaAppID, cfg.MetaAppSecret, cfg.MetaOAuthRedirectURI)
 	igReader := instagram.NewReader()
@@ -105,7 +102,7 @@ func main() {
 	slotH := handler.NewSlotHandler(slotSvc, logger)
 	mediaH := handler.NewMediaHandler(slotSvc, storageClient, queries, logger)
 	billingH := handler.NewBillingHandler(billingSvc, logger)
-	publicH := handler.NewPublicHandler(queries, logger)
+	publicH := handler.NewPublicHandler(analysisSvc, queries, logger)
 
 	// Auth middleware — JWKS (RS256) with HMAC fallback
 	jwksURL := ""

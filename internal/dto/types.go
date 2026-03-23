@@ -271,6 +271,15 @@ type PublicAuditRequest struct {
 	MockScore  int    `json:"mock_score,omitempty"`
 }
 
+type PublicAuditResult struct {
+	ID              string           `json:"id"`
+	Username        string           `json:"username"`
+	Score           int              `json:"score"`
+	Strengths       []Strength       `json:"strengths"`
+	Recommendations []Recommendation `json:"recommendations"`
+	CreatedAt       string           `json:"created_at"`
+}
+
 type PublicAuditResponse struct {
 	Status string       `json:"status"`
 	Result *BrandDnaDTO `json:"result,omitempty"`
