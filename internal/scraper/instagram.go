@@ -11,6 +11,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-rod/rod"
@@ -49,21 +50,45 @@ type ProfileInfo struct {
 	FollowersCount int    `json:"followers_count"`
 }
 
+// cacheEntry holds a cached scrape result.
+type cacheEntry struct {
+	profile   ProfileInfo
+	posts     []Post
+	expiresAt time.Time
+}
+
+const cacheTTL = 1 * time.Hour
+
 // Scraper handles Instagram data collection via direct API + headless fallback.
 type Scraper struct {
 	httpClient *http.Client
 	logger     *slog.Logger
+	mu         sync.RWMutex
+	cache      map[string]cacheEntry
 }
 
 func NewScraper(logger *slog.Logger) *Scraper {
 	return &Scraper{
 		httpClient: &http.Client{Timeout: 10 * time.Second},
 		logger:     logger,
+		cache:      make(map[string]cacheEntry),
 	}
 }
 
-// ScrapeProfile tries the direct API first, falls back to headless browser.
+// ScrapeProfile tries cache first, then direct API, then headless browser.
 func (s *Scraper) ScrapeProfile(ctx context.Context, username string) (ProfileInfo, []Post, error) {
+	// Check cache
+	s.mu.RLock()
+	if entry, ok := s.cache[username]; ok && time.Now().Before(entry.expiresAt) {
+		s.mu.RUnlock()
+		s.logger.Info("scraper: cache hit",
+			slog.String("username", username),
+			slog.Int("posts", len(entry.posts)),
+		)
+		return entry.profile, entry.posts, nil
+	}
+	s.mu.RUnlock()
+
 	// Step 1: Direct API (fast path)
 	profile, posts, err := s.scrapeViaAPI(ctx, username)
 	if err == nil {
@@ -71,6 +96,7 @@ func (s *Scraper) ScrapeProfile(ctx context.Context, username string) (ProfileIn
 			slog.String("username", username),
 			slog.Int("posts", len(posts)),
 		)
+		s.cacheResult(username, profile, posts)
 		return profile, posts, nil
 	}
 
@@ -89,7 +115,18 @@ func (s *Scraper) ScrapeProfile(ctx context.Context, username string) (ProfileIn
 		slog.String("username", username),
 		slog.Int("posts", len(posts)),
 	)
+	s.cacheResult(username, profile, posts)
 	return profile, posts, nil
+}
+
+func (s *Scraper) cacheResult(username string, profile ProfileInfo, posts []Post) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cache[username] = cacheEntry{
+		profile:   profile,
+		posts:     posts,
+		expiresAt: time.Now().Add(cacheTTL),
+	}
 }
 
 // ── Direct API ──────────────────────────────────────────────────────────────
