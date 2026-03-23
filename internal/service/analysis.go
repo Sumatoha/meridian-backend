@@ -3,8 +3,11 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/meridian/api/internal/ai"
@@ -14,22 +17,51 @@ import (
 	"github.com/meridian/api/internal/scraper"
 )
 
+// ErrScrapeRateLimited is returned when hourly scrape quota is exhausted.
+var ErrScrapeRateLimited = errors.New("scrape rate limit exceeded")
+
+const maxPublicScrapesPerHour = 200
+
 type AnalysisService struct {
 	queries  *repository.Queries
 	aiClient *ai.Client
 	scraper  *scraper.Scraper
 	igReader *instagram.Reader
 	logger   *slog.Logger
+
+	// Hourly scrape counter for public audit
+	scrapeMu    sync.Mutex
+	scrapeCount int
+	scrapeReset time.Time
 }
 
 func NewAnalysisService(queries *repository.Queries, aiClient *ai.Client, sc *scraper.Scraper, igReader *instagram.Reader, logger *slog.Logger) *AnalysisService {
 	return &AnalysisService{
-		queries:  queries,
-		aiClient: aiClient,
-		scraper:  sc,
-		igReader: igReader,
-		logger:   logger,
+		queries:     queries,
+		aiClient:    aiClient,
+		scraper:     sc,
+		igReader:    igReader,
+		logger:      logger,
+		scrapeReset: time.Now().Add(time.Hour),
 	}
+}
+
+// checkScrapeQuota returns true if we haven't exceeded the hourly limit.
+func (s *AnalysisService) checkScrapeQuota() bool {
+	s.scrapeMu.Lock()
+	defer s.scrapeMu.Unlock()
+
+	if time.Now().After(s.scrapeReset) {
+		s.scrapeCount = 0
+		s.scrapeReset = time.Now().Add(time.Hour)
+	}
+
+	if s.scrapeCount >= maxPublicScrapesPerHour {
+		return false
+	}
+
+	s.scrapeCount++
+	return true
 }
 
 // AnalyzeProfile scrapes the profile, runs AI analysis, and stores the result.
@@ -168,6 +200,11 @@ func (s *AnalysisService) AnalyzeProfile(ctx context.Context, accountID uuid.UUI
 // AnalyzePublic scrapes a public profile and runs AI analysis without an account.
 // Used for the free landing-page audit. Does not store results in the database.
 func (s *AnalysisService) AnalyzePublic(ctx context.Context, username string) (dto.PublicAuditResult, error) {
+	if !s.checkScrapeQuota() {
+		s.logger.Warn("public audit: rate limited", slog.String("username", username))
+		return dto.PublicAuditResult{}, ErrScrapeRateLimited
+	}
+
 	s.logger.Info("public audit: starting", slog.String("username", username))
 
 	// Scrape via direct API → headless fallback
