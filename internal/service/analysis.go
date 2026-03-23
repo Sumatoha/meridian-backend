@@ -168,7 +168,13 @@ func (s *AnalysisService) AnalyzeProfile(ctx context.Context, accountID uuid.UUI
 	// Step 5: Store Brand DNA
 	strengthsJSON, _ := json.Marshal(dna.Strengths)
 	recommendationsJSON, _ := json.Marshal(dna.Recommendations)
-	rawJSON := json.RawMessage(rawResponse)
+
+	// Re-marshal the parsed struct to get valid JSON (rawResponse may contain markdown fences)
+	rawClean, err := json.Marshal(dna)
+	if err != nil {
+		rawClean = []byte("{}")
+	}
+	rawJSON := json.RawMessage(rawClean)
 
 	_, err = s.queries.CreateBrandDna(ctx, repository.CreateBrandDnaParams{
 		InstagramAccountID: accountID,
