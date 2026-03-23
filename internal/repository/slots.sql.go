@@ -165,6 +165,56 @@ func (q *Queries) QueueApprovedSlots(ctx context.Context, planID uuid.UUID) (int
 	return tag.RowsAffected(), nil
 }
 
+type SlotWithAccount struct {
+	ContentSlot
+	InstagramAccountID uuid.UUID
+}
+
+func (q *Queries) GetSlotsReadyToPublish(ctx context.Context) ([]SlotWithAccount, error) {
+	rows, err := q.db.Query(ctx,
+		`SELECT cs.*, cp.instagram_account_id
+		FROM content_slots cs
+		JOIN content_plans cp ON cs.plan_id = cp.id
+		WHERE cs.status = 'approved'
+		  AND cs.scheduled_date = CURRENT_DATE
+		  AND cs.scheduled_time <= CURRENT_TIME
+		  AND cs.media::text != '[]'
+		ORDER BY cs.scheduled_time`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []SlotWithAccount
+	for rows.Next() {
+		var s SlotWithAccount
+		if err := rows.Scan(&s.ID, &s.PlanID, &s.DayNumber, &s.ScheduledDate, &s.ScheduledTime,
+			&s.Title, &s.ContentType, &s.Format, &s.Brief, &s.Caption, &s.Hashtags, &s.Cta, &s.Media,
+			&s.Status, &s.IsUserContent, &s.PublishedAt, &s.IgPostID, &s.IgPostUrl, &s.ErrorMessage,
+			&s.RetryCount, &s.RegenerationCount, &s.CreatedAt, &s.UpdatedAt,
+			&s.InstagramAccountID); err != nil {
+			return nil, err
+		}
+		items = append(items, s)
+	}
+	return items, nil
+}
+
+func (q *Queries) SkipSlotsMissingMedia(ctx context.Context) (int64, error) {
+	tag, err := q.db.Exec(ctx,
+		`UPDATE content_slots SET
+		  status = 'skipped',
+		  error_message = 'No media uploaded',
+		  updated_at = NOW()
+		WHERE status = 'approved'
+		  AND scheduled_date = CURRENT_DATE
+		  AND scheduled_time <= CURRENT_TIME
+		  AND media::text = '[]'`)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
+}
+
 type slotScanner interface {
 	Scan(dest ...interface{}) error
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/meridian/api/internal/dto"
 	"github.com/meridian/api/internal/instagram"
@@ -30,6 +31,64 @@ func NewPublisherService(
 		publisher: publisher,
 		storage:   storageClient,
 		logger:    logger,
+	}
+}
+
+// RunTicker starts a background loop that checks for due slots every interval.
+func (ps *PublisherService) RunTicker(ctx context.Context, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	ps.logger.Info("publisher ticker started", slog.String("interval", interval.String()))
+
+	for {
+		select {
+		case <-ctx.Done():
+			ps.logger.Info("publisher ticker stopped")
+			return
+		case <-ticker.C:
+			ps.tick(ctx)
+		}
+	}
+}
+
+func (ps *PublisherService) tick(ctx context.Context) {
+	// Skip approved slots that are due but have no media
+	skipped, err := ps.queries.SkipSlotsMissingMedia(ctx)
+	if err != nil {
+		ps.logger.Error("skip missing media failed", slog.String("error", err.Error()))
+	} else if skipped > 0 {
+		ps.logger.Info("skipped slots without media", slog.Int64("count", skipped))
+	}
+
+	// Get approved slots that are due and have media
+	slots, err := ps.queries.GetSlotsReadyToPublish(ctx)
+	if err != nil {
+		ps.logger.Error("get ready slots failed", slog.String("error", err.Error()))
+		return
+	}
+
+	if len(slots) == 0 {
+		return
+	}
+
+	ps.logger.Info("publishing due slots", slog.Int("count", len(slots)))
+
+	for _, slotWithAccount := range slots {
+		account, err := ps.queries.GetAccountByID(ctx, slotWithAccount.InstagramAccountID)
+		if err != nil {
+			ps.logger.Error("get account for publish failed",
+				slog.String("slot_id", slotWithAccount.ID.String()),
+				slog.String("error", err.Error()),
+			)
+			continue
+		}
+		if err := ps.PublishSlotByRecord(ctx, slotWithAccount.ContentSlot, account); err != nil {
+			ps.logger.Error("publish failed",
+				slog.String("slot_id", slotWithAccount.ID.String()),
+				slog.String("error", err.Error()),
+			)
+		}
 	}
 }
 

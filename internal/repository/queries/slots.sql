@@ -72,10 +72,21 @@ WHERE plan_id = $1 AND status = 'approved' AND media::text != '[]';
 SELECT cs.*, cp.instagram_account_id
 FROM content_slots cs
 JOIN content_plans cp ON cs.plan_id = cp.id
-WHERE cs.status = 'queued'
+WHERE cs.status = 'approved'
   AND cs.scheduled_date = CURRENT_DATE
   AND cs.scheduled_time <= CURRENT_TIME
+  AND cs.media::text != '[]'
 ORDER BY cs.scheduled_time;
+
+-- name: SkipSlotsMissingMedia :execrows
+UPDATE content_slots SET
+  status = 'skipped',
+  error_message = 'No media uploaded',
+  updated_at = NOW()
+WHERE status = 'approved'
+  AND scheduled_date = CURRENT_DATE
+  AND scheduled_time <= CURRENT_TIME
+  AND media::text = '[]';
 
 -- name: CountSlotsByPlanID :one
 SELECT COUNT(*)::int FROM content_slots WHERE plan_id = $1;

@@ -94,7 +94,8 @@ func main() {
 	publisherSvc := service.NewPublisherService(queries, igPublisher, storageClient, logger)
 	billingSvc := service.NewBillingService(queries, cfg.DodoAPIKey, cfg.KaspiMerchantID, cfg.KaspiSecret)
 
-	_ = publisherSvc // Used by River jobs
+	// Start publisher ticker — checks every 5 minutes for due slots
+	go publisherSvc.RunTicker(ctx, 5*time.Minute)
 
 	// Initialize handlers
 	accountH := handler.NewAccountHandler(accountSvc, logger)
