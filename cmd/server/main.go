@@ -57,9 +57,16 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Connect to database
+	// Connect to database with limited pool size to avoid exhausting Supabase session mode
 	ctx := context.Background()
-	pool, err := pgxpool.New(ctx, cfg.DatabaseURL)
+	poolConfig, err := pgxpool.ParseConfig(cfg.DatabaseURL)
+	if err != nil {
+		logger.Error("failed to parse database URL", slog.String("error", err.Error()))
+		os.Exit(1)
+	}
+	poolConfig.MaxConns = 10
+	poolConfig.MinConns = 2
+	pool, err := pgxpool.NewWithConfig(ctx, poolConfig)
 	if err != nil {
 		logger.Error("failed to connect to database", slog.String("error", err.Error()))
 		os.Exit(1)
