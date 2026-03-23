@@ -50,7 +50,11 @@ func (h *PlanHandler) Generate(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 		defer cancel()
 
-		planID, err := h.planSvc.GeneratePlan(ctx, accountID, startDate)
+		var opts *service.GeneratePlanOptions
+		if req.ContentLanguage != nil {
+			opts = &service.GeneratePlanOptions{ContentLanguage: *req.ContentLanguage}
+		}
+		planID, err := h.planSvc.GeneratePlan(ctx, accountID, startDate, opts)
 		if err != nil {
 			h.logger.Error("plan generation failed",
 				slog.String("account_id", accountID.String()),

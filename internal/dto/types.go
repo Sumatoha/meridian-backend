@@ -136,7 +136,8 @@ type JobResponse struct {
 // --- Content Plans ---
 
 type GeneratePlanRequest struct {
-	StartDate *string `json:"start_date,omitempty"`
+	StartDate       *string `json:"start_date,omitempty"`
+	ContentLanguage *string `json:"content_language,omitempty"` // "en", "ru", "kz" — overrides brand settings
 }
 
 type ContentPlanSummaryDTO struct {

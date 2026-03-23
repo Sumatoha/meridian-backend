@@ -103,6 +103,57 @@ func BuildPlanUserPrompt(totalSlots int, startDate, endDate string) string {
 	return fmt.Sprintf(planUserPrompt, totalSlots, startDate, endDate)
 }
 
+// ── Two-phase generation prompts ──
+
+const skeletonUserPrompt = `Create a content plan skeleton for %d posts from %s to %s.
+
+Think strategically: ensure proper content type balance, no repeated topics, consider holidays/events, and follow all brand rules.
+
+Return ONLY a valid JSON array:
+[{
+  "day_number": <int>,
+  "scheduled_date": "<YYYY-MM-DD>",
+  "scheduled_time": "<HH:MM>",
+  "title": "<short descriptive title>",
+  "content_type": "useful|selling|personal|entertaining",
+  "format": "reels|carousel|photo"
+}]`
+
+func BuildSkeletonUserPrompt(totalSlots int, startDate, endDate string) string {
+	return fmt.Sprintf(skeletonUserPrompt, totalSlots, startDate, endDate)
+}
+
+const detailsUserPrompt = `Here is a content plan skeleton. Write detailed briefs ONLY for days %d through %d.
+
+Full plan context (DO NOT repeat topics from other days):
+%s
+
+For each slot in your assigned range, return a JSON array with full details:
+[{
+  "day_number": <int>,
+  "scheduled_date": "<YYYY-MM-DD>",
+  "scheduled_time": "<HH:MM>",
+  "title": "<string>",
+  "content_type": "useful|selling|personal|entertaining",
+  "format": "reels|carousel|photo",
+  "brief": {
+    "visual_description": "<detailed description>",
+    "scene_by_scene": [{"scene": <int>, "description": "<string>", "on_screen_text": "<string>", "duration": "<string>"}],
+    "mood": "<string>",
+    "photo_direction": "<string>",
+    "people_in_frame": "<string>",
+    "props_needed": ["<string>"],
+    "aspect_ratio": "<string>"
+  },
+  "caption": "<string>",
+  "hashtags": ["<string>"],
+  "cta": "<string>"
+}]`
+
+func BuildDetailsUserPrompt(dayFrom, dayTo int, skeletonJSON string) string {
+	return fmt.Sprintf(detailsUserPrompt, dayFrom, dayTo, skeletonJSON)
+}
+
 const regenSystemAddendum = `
 This slot was rejected. Here's what was there before: %s
 Other approved slots in this plan: %s

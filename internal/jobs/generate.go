@@ -41,7 +41,7 @@ func (w *GeneratePlanWorker) Work(ctx context.Context, job *river.Job[GeneratePl
 		return fmt.Errorf("generate plan job: parse start date: %w", err)
 	}
 
-	planID, err := w.planSvc.GeneratePlan(ctx, job.Args.AccountID, startDate)
+	planID, err := w.planSvc.GeneratePlan(ctx, job.Args.AccountID, startDate, nil)
 	if err != nil {
 		return fmt.Errorf("generate plan job: %w", err)
 	}

@@ -25,7 +25,13 @@ func NewPlanService(queries *repository.Queries, aiClient *ai.Client, logger *sl
 }
 
 // GeneratePlan creates a new content plan using AI.
-func (s *PlanService) GeneratePlan(ctx context.Context, accountID uuid.UUID, startDate time.Time) (uuid.UUID, error) {
+// langOverride optionally overrides the content_language from brand settings.
+// GeneratePlanOptions contains optional overrides for plan generation.
+type GeneratePlanOptions struct {
+	ContentLanguage string // if set, overrides brand settings language
+}
+
+func (s *PlanService) GeneratePlan(ctx context.Context, accountID uuid.UUID, startDate time.Time, opts *GeneratePlanOptions) (uuid.UUID, error) {
 	// Load settings (use defaults if not configured yet)
 	settings, err := s.queries.GetBrandSettings(ctx, accountID)
 	if err != nil {
@@ -54,6 +60,11 @@ func (s *PlanService) GeneratePlan(ctx context.Context, accountID uuid.UUID, sta
 		}
 	}
 
+	// Apply overrides if provided
+	if opts != nil && opts.ContentLanguage != "" {
+		settings.ContentLanguage = opts.ContentLanguage
+	}
+
 	// Calculate end date (30 days) and total slots based on frequency
 	endDate := startDate.AddDate(0, 0, 29)
 	totalSlots := calculateTotalSlots(settings.PostingFrequency, 30)
@@ -61,77 +72,132 @@ func (s *PlanService) GeneratePlan(ctx context.Context, accountID uuid.UUID, sta
 	// Build system prompt from settings
 	systemPrompt := s.buildPlanSystemPrompt(settings)
 
-	// Generate slots in batches to avoid AI timeout
-	// Each batch generates ~10 slots which takes ~1-2 min
-	s.logger.Info("calling AI for plan generation",
+	// ── Phase 1: Generate skeleton (fast — ~3 sec) ──
+	s.logger.Info("phase 1: generating skeleton",
 		slog.String("account_id", accountID.String()),
 		slog.Int("total_slots", totalSlots),
 	)
 
-	var allSlots []slotAIResponse
-	batchSize := 10
-	for batchStart := 0; batchStart < totalSlots; batchStart += batchSize {
-		batchEnd := batchStart + batchSize
-		if batchEnd > totalSlots {
-			batchEnd = totalSlots
+	skeletonPrompt := ai.BuildSkeletonUserPrompt(
+		totalSlots,
+		startDate.Format("2006-01-02"),
+		endDate.Format("2006-01-02"),
+	)
+
+	skeletonRaw, err := s.aiClient.Generate(ctx, systemPrompt, skeletonPrompt, 4000)
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("generate plan: skeleton: %w", err)
+	}
+
+	type skeletonSlot struct {
+		DayNumber     int    `json:"day_number"`
+		ScheduledDate string `json:"scheduled_date"`
+		ScheduledTime string `json:"scheduled_time"`
+		Title         string `json:"title"`
+		ContentType   string `json:"content_type"`
+		Format        string `json:"format"`
+	}
+
+	skeleton, err := ai.ParseJSON[[]skeletonSlot](skeletonRaw)
+	if err != nil {
+		s.logger.Error("parse skeleton failed",
+			slog.String("error", err.Error()),
+			slog.String("raw", truncateStr(skeletonRaw, 500)),
+		)
+		return uuid.Nil, fmt.Errorf("generate plan: parse skeleton: %w", err)
+	}
+
+	s.logger.Info("phase 1 complete",
+		slog.Int("skeleton_slots", len(skeleton)),
+	)
+
+	if len(skeleton) == 0 {
+		return uuid.Nil, fmt.Errorf("generate plan: skeleton returned 0 slots")
+	}
+
+	// ── Phase 2: Generate details in parallel (~10-15 sec) ──
+	// Split into 4 groups and run concurrently
+	type batchRange struct {
+		from, to int
+	}
+	groupSize := (len(skeleton) + 3) / 4 // ceil division by 4
+	var batches []batchRange
+	for i := 0; i < len(skeleton); i += groupSize {
+		end := i + groupSize
+		if end > len(skeleton) {
+			end = len(skeleton)
 		}
-		batchCount := batchEnd - batchStart
+		dayFrom := skeleton[i].DayNumber
+		dayTo := skeleton[end-1].DayNumber
+		batches = append(batches, batchRange{from: dayFrom, to: dayTo})
+	}
 
-		// Calculate dates for this batch
-		batchStartDate := startDate.AddDate(0, 0, batchStart)
-		batchEndDate := startDate.AddDate(0, 0, batchEnd-1)
+	s.logger.Info("phase 2: generating details in parallel",
+		slog.Int("batches", len(batches)),
+	)
 
-		userPrompt := ai.BuildPlanUserPrompt(
-			batchCount,
-			batchStartDate.Format("2006-01-02"),
-			batchEndDate.Format("2006-01-02"),
-		)
+	// Skeleton JSON for context in each batch
+	skeletonJSON := skeletonRaw
 
-		s.logger.Info("AI batch request",
-			slog.Int("batch", batchStart/batchSize+1),
-			slog.Int("slots", batchCount),
-			slog.String("from", batchStartDate.Format("2006-01-02")),
-			slog.String("to", batchEndDate.Format("2006-01-02")),
-		)
+	type batchResult struct {
+		index int
+		slots []slotAIResponse
+		err   error
+	}
 
-		rawResponse, err := s.aiClient.Generate(ctx, systemPrompt, userPrompt, 16000)
-		if err != nil {
-			return uuid.Nil, fmt.Errorf("generate plan: AI batch %d: %w", batchStart/batchSize+1, err)
-		}
+	results := make(chan batchResult, len(batches))
 
-		s.logger.Info("AI batch response received",
-			slog.Int("batch", batchStart/batchSize+1),
-			slog.Int("response_len", len(rawResponse)),
-		)
+	for i, b := range batches {
+		go func(idx int, br batchRange) {
+			detailPrompt := ai.BuildDetailsUserPrompt(br.from, br.to, skeletonJSON)
+			raw, err := s.aiClient.Generate(ctx, systemPrompt, detailPrompt, 16000)
+			if err != nil {
+				results <- batchResult{index: idx, err: fmt.Errorf("batch %d: %w", idx+1, err)}
+				return
+			}
 
-		batchSlots, err := ai.ParseJSON[[]slotAIResponse](rawResponse)
-		if err != nil {
-			s.logger.Error("parse AI batch failed",
-				slog.Int("batch", batchStart/batchSize+1),
-				slog.String("error", err.Error()),
-				slog.String("raw_response", truncateStr(rawResponse, 500)),
+			parsed, err := ai.ParseJSON[[]slotAIResponse](raw)
+			if err != nil {
+				s.logger.Error("parse detail batch failed",
+					slog.Int("batch", idx+1),
+					slog.String("error", err.Error()),
+					slog.String("raw", truncateStr(raw, 500)),
+				)
+				results <- batchResult{index: idx, err: fmt.Errorf("parse batch %d: %w", idx+1, err)}
+				return
+			}
+
+			s.logger.Info("detail batch complete",
+				slog.Int("batch", idx+1),
+				slog.Int("slots", len(parsed)),
 			)
-			return uuid.Nil, fmt.Errorf("generate plan: parse batch %d: %w", batchStart/batchSize+1, err)
-		}
-
-		// Fix day numbers to be sequential across batches
-		for i := range batchSlots {
-			batchSlots[i].DayNumber = batchStart + i + 1
-		}
-
-		allSlots = append(allSlots, batchSlots...)
-		s.logger.Info("batch parsed",
-			slog.Int("batch", batchStart/batchSize+1),
-			slog.Int("slots", len(batchSlots)),
-			slog.Int("total_so_far", len(allSlots)),
-		)
+			results <- batchResult{index: idx, slots: parsed}
+		}(i, b)
 	}
 
-	if len(allSlots) == 0 {
-		return uuid.Nil, fmt.Errorf("generate plan: AI returned 0 slots")
+	// Collect results
+	allBatches := make([][]slotAIResponse, len(batches))
+	for range batches {
+		res := <-results
+		if res.err != nil {
+			return uuid.Nil, fmt.Errorf("generate plan: details: %w", res.err)
+		}
+		allBatches[res.index] = res.slots
 	}
 
-	slots := allSlots
+	// Merge all slots in order
+	var slots []slotAIResponse
+	for _, batch := range allBatches {
+		slots = append(slots, batch...)
+	}
+
+	s.logger.Info("phase 2 complete",
+		slog.Int("total_slots", len(slots)),
+	)
+
+	if len(slots) == 0 {
+		return uuid.Nil, fmt.Errorf("generate plan: details returned 0 slots")
+	}
 
 	// NOW create plan record — only after AI succeeded
 	title := fmt.Sprintf("%s %d Plan", startDate.Month().String(), startDate.Year())
