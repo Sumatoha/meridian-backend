@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/go-rod/rod"
+	"github.com/go-rod/rod/lib/input"
 	"github.com/go-rod/rod/lib/launcher"
 	"github.com/go-rod/rod/lib/proto"
 )
@@ -277,12 +278,10 @@ var sharedDataRegex = regexp.MustCompile(`window\._sharedData\s*=\s*({.+?});</sc
 func (s *Scraper) scrapeViaHeadless(ctx context.Context, username string) (ProfileInfo, []Post, error) {
 	// Try system chromium first (for Docker/Railway), fall back to Rod's auto-download
 	l := launcher.New().Headless(true).
-		// Flags needed for running in containers without a display
 		Set("no-sandbox").
 		Set("disable-gpu").
 		Set("disable-dev-shm-usage")
 
-	// Check for system-installed chromium (ROD_BROWSER env or system path)
 	if envBin := os.Getenv("ROD_BROWSER"); envBin != "" {
 		l = l.Bin(envBin)
 		s.logger.Info("scraper: using ROD_BROWSER", slog.String("path", envBin))
@@ -291,41 +290,90 @@ func (s *Scraper) scrapeViaHeadless(ctx context.Context, username string) (Profi
 		s.logger.Info("scraper: using system browser", slog.String("path", path))
 	}
 
-	url, err := l.Launch()
+	wsURL, err := l.Launch()
 	if err != nil {
 		return ProfileInfo{}, nil, fmt.Errorf("headless: launch browser: %w", err)
 	}
 
-	browser := rod.New().ControlURL(url)
+	browser := rod.New().ControlURL(wsURL)
 	if err := browser.Connect(); err != nil {
 		return ProfileInfo{}, nil, fmt.Errorf("headless: connect: %w", err)
 	}
 	defer browser.MustClose()
 
-	page, err := browser.Page(proto.TargetCreateTarget{
-		URL: fmt.Sprintf("https://www.instagram.com/%s/", username),
-	})
+	page, err := browser.Page(proto.TargetCreateTarget{})
 	if err != nil {
-		return ProfileInfo{}, nil, fmt.Errorf("headless: open page: %w", err)
+		return ProfileInfo{}, nil, fmt.Errorf("headless: new page: %w", err)
 	}
 
-	// Wait for page to load with timeout
-	loadCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	loadCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-
 	page = page.Context(loadCtx)
-	if err := page.WaitStable(2 * time.Second); err != nil {
-		return ProfileInfo{}, nil, fmt.Errorf("headless: page didn't stabilize: %w", err)
+
+	// Intercept network responses to capture GraphQL profile data
+	var capturedProfile ProfileInfo
+	var capturedPosts []Post
+	var captured bool
+
+	router := page.HijackRequests()
+	router.MustAdd("*graphql*", func(hijack *rod.Hijack) {
+		// Let the request go through normally
+		hijack.MustLoadResponse()
+
+		body := hijack.Response.Body()
+		if body == "" || captured {
+			return
+		}
+
+		// Try to parse GraphQL response as profile data
+		if strings.Contains(body, "edge_followed_by") || strings.Contains(body, "edge_owner_to_timeline_media") {
+			profile, posts, err := parseEmbeddedUserData(body)
+			if err == nil && profile.Username != "" {
+				capturedProfile = profile
+				capturedPosts = posts
+				captured = true
+				s.logger.Info("scraper: captured profile from GraphQL intercept",
+					slog.String("username", profile.Username),
+					slog.Int("posts", len(posts)),
+				)
+			}
+		}
+	})
+	// Pass through all other requests
+	router.MustAdd("*", func(hijack *rod.Hijack) {
+		hijack.MustLoadResponse()
+	})
+	go router.Run()
+	defer router.MustStop()
+
+	// Navigate to profile page
+	if err := page.Navigate(fmt.Sprintf("https://www.instagram.com/%s/", username)); err != nil {
+		return ProfileInfo{}, nil, fmt.Errorf("headless: navigate: %w", err)
 	}
 
-	// Try to extract profile data from the page's JSON
-	// Instagram embeds data in various script tags
+	// Wait for network to settle or data to be captured
+	_ = page.WaitStable(3 * time.Second)
+
+	// Try to dismiss login modal by pressing Escape
+	_ = page.Keyboard.Press(input.Escape)
+	time.Sleep(500 * time.Millisecond)
+
+	// If GraphQL intercept captured data, use it
+	if captured {
+		return capturedProfile, capturedPosts, nil
+	}
+
+	// Fallback: parse HTML meta tags for basic profile info (no posts)
 	html, err := page.HTML()
 	if err != nil {
 		return ProfileInfo{}, nil, fmt.Errorf("headless: get HTML: %w", err)
 	}
 
-	// Try _sharedData first
+	s.logger.Warn("scraper: GraphQL intercept got nothing, trying meta tags",
+		slog.Int("html_len", len(html)),
+	)
+
+	// Try _sharedData
 	if matches := sharedDataRegex.FindStringSubmatch(html); len(matches) > 1 {
 		profile, posts, err := parseSharedData(matches[1])
 		if err == nil && profile.Username != "" {
@@ -333,13 +381,65 @@ func (s *Scraper) scrapeViaHeadless(ctx context.Context, username string) (Profi
 		}
 	}
 
-	// Try extracting from the script tags with type="application/json"
+	// Try script tags
 	profile, posts, err := s.extractFromScriptTags(page)
-	if err != nil {
-		return ProfileInfo{}, nil, fmt.Errorf("headless: extract data: %w", err)
+	if err == nil && profile.Username != "" {
+		return profile, posts, nil
 	}
 
-	return profile, posts, nil
+	// Last resort: parse meta tags for minimal profile info
+	profile, err = parseMetaTags(html, username)
+	if err == nil && profile.Username != "" {
+		s.logger.Info("scraper: got profile from meta tags (no posts)", slog.String("username", username))
+		return profile, nil, nil
+	}
+
+	return ProfileInfo{}, nil, fmt.Errorf("no profile data found")
+}
+
+// parseMetaTags extracts basic profile info from og: meta tags.
+// Instagram still serves these for SEO even on login-walled pages.
+func parseMetaTags(html, username string) (ProfileInfo, error) {
+	profile := ProfileInfo{Username: username}
+
+	// og:description typically contains: "X Followers, Y Following, Z Posts - ..."
+	descRe := regexp.MustCompile(`<meta\s+(?:property|name)="og:description"\s+content="([^"]*)"`)
+	if m := descRe.FindStringSubmatch(html); len(m) > 1 {
+		desc := m[1]
+		// Parse follower count from "1,234 Followers" or "1.2K Followers"
+		followersRe := regexp.MustCompile(`([\d,.]+[KkMm]?)\s+[Ff]ollowers`)
+		if fm := followersRe.FindStringSubmatch(desc); len(fm) > 1 {
+			profile.FollowersCount = parseCount(fm[1])
+		}
+	}
+
+	// og:image for profile pic
+	imgRe := regexp.MustCompile(`<meta\s+(?:property|name)="og:image"\s+content="([^"]*)"`)
+	if m := imgRe.FindStringSubmatch(html); len(m) > 1 {
+		profile.ProfilePicURL = m[1]
+	}
+
+	if profile.FollowersCount > 0 || profile.ProfilePicURL != "" {
+		return profile, nil
+	}
+
+	return ProfileInfo{}, fmt.Errorf("no meta tags found")
+}
+
+// parseCount converts "1,234" or "1.2K" or "3M" to int.
+func parseCount(s string) int {
+	s = strings.ReplaceAll(s, ",", "")
+	multiplier := 1
+	if strings.HasSuffix(s, "K") || strings.HasSuffix(s, "k") {
+		multiplier = 1000
+		s = s[:len(s)-1]
+	} else if strings.HasSuffix(s, "M") || strings.HasSuffix(s, "m") {
+		multiplier = 1000000
+		s = s[:len(s)-1]
+	}
+	var f float64
+	fmt.Sscanf(s, "%f", &f)
+	return int(f * float64(multiplier))
 }
 
 func (s *Scraper) extractFromScriptTags(page *rod.Page) (ProfileInfo, []Post, error) {
