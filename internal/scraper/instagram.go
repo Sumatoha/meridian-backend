@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"math/rand"
 	"net/http"
+	"os"
 	"regexp"
 	"strings"
 	"time"
@@ -134,7 +135,7 @@ func (s *Scraper) scrapeViaAPI(ctx context.Context, username string) (ProfileInf
 		resp, err := s.httpClient.Do(req)
 		if err != nil {
 			lastErr = fmt.Errorf("attempt %d: request error: %w", attempt+1, err)
-			s.logger.Debug("scraper: API attempt failed",
+			s.logger.Warn("scraper: API attempt failed",
 				slog.Int("attempt", attempt+1),
 				slog.String("error", err.Error()),
 			)
@@ -148,15 +149,26 @@ func (s *Scraper) scrapeViaAPI(ctx context.Context, username string) (ProfileInf
 			profile, posts, err := parseWebProfileInfo(body)
 			if err != nil {
 				lastErr = fmt.Errorf("attempt %d: parse error: %w", attempt+1, err)
+				s.logger.Warn("scraper: API parse failed",
+					slog.Int("attempt", attempt+1),
+					slog.String("error", err.Error()),
+					slog.Int("body_len", len(body)),
+				)
 				continue
 			}
 			return profile, posts, nil
 		}
 
+		// Log first 200 chars of body for debugging blocked responses
+		snippet := string(body)
+		if len(snippet) > 200 {
+			snippet = snippet[:200]
+		}
 		lastErr = fmt.Errorf("attempt %d: status %d", attempt+1, resp.StatusCode)
-		s.logger.Debug("scraper: API attempt non-200",
+		s.logger.Warn("scraper: API non-200",
 			slog.Int("attempt", attempt+1),
 			slog.Int("status", resp.StatusCode),
+			slog.String("body_snippet", snippet),
 		)
 	}
 
@@ -263,8 +275,23 @@ func parseWebProfileInfo(body []byte) (ProfileInfo, []Post, error) {
 var sharedDataRegex = regexp.MustCompile(`window\._sharedData\s*=\s*({.+?});</script>`)
 
 func (s *Scraper) scrapeViaHeadless(ctx context.Context, username string) (ProfileInfo, []Post, error) {
-	// Launch headless browser
-	url, err := launcher.New().Headless(true).Launch()
+	// Try system chromium first (for Docker/Railway), fall back to Rod's auto-download
+	l := launcher.New().Headless(true).
+		// Flags needed for running in containers without a display
+		Set("no-sandbox").
+		Set("disable-gpu").
+		Set("disable-dev-shm-usage")
+
+	// Check for system-installed chromium (ROD_BROWSER env or system path)
+	if envBin := os.Getenv("ROD_BROWSER"); envBin != "" {
+		l = l.Bin(envBin)
+		s.logger.Info("scraper: using ROD_BROWSER", slog.String("path", envBin))
+	} else if path, exists := launcher.LookPath(); exists {
+		l = l.Bin(path)
+		s.logger.Info("scraper: using system browser", slog.String("path", path))
+	}
+
+	url, err := l.Launch()
 	if err != nil {
 		return ProfileInfo{}, nil, fmt.Errorf("headless: launch browser: %w", err)
 	}
