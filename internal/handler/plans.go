@@ -34,7 +34,10 @@ func (h *PlanHandler) Generate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req dto.GeneratePlanRequest
-	parseJSON(r, &req)
+	if err := parseJSON(r, &req); err != nil {
+		h.logger.Warn("plan generate: failed to parse body", slog.String("error", err.Error()))
+		// Continue with defaults — body is optional
+	}
 
 	startDate := time.Now().AddDate(0, 0, 1) // tomorrow
 	if req.StartDate != nil {
@@ -64,6 +67,9 @@ func (h *PlanHandler) Generate(w http.ResponseWriter, r *http.Request) {
 		opts.MixSelling = req.MixSelling
 		opts.MixPersonal = req.MixPersonal
 		opts.MixEntertaining = req.MixEntertaining
+		if req.BrandContext != nil {
+			opts.BrandContext = *req.BrandContext
+		}
 		planID, err := h.planSvc.GeneratePlan(ctx, accountID, startDate, opts)
 		if err != nil {
 			h.logger.Error("plan generation failed",

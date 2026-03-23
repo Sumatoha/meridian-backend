@@ -96,8 +96,12 @@ func (s *PlanService) GeneratePlan(ctx context.Context, accountID uuid.UUID, sta
 	endDate := startDate.AddDate(0, 0, 29)
 	totalSlots := calculateTotalSlots(settings.PostingFrequency, 30)
 
-	// Build system prompt from settings
-	systemPrompt := s.buildPlanSystemPrompt(settings)
+	// Build system prompt from settings + optional brand context
+	brandContext := ""
+	if opts != nil && opts.BrandContext != "" {
+		brandContext = opts.BrandContext
+	}
+	systemPrompt := s.buildPlanSystemPrompt(settings, brandContext)
 
 	// ── Phase 1: Generate skeleton (fast — ~3 sec) ──
 	s.logger.Info("phase 1: generating skeleton",
@@ -423,7 +427,7 @@ func (s *PlanService) DeletePlan(ctx context.Context, planID uuid.UUID) error {
 	return nil
 }
 
-func (s *PlanService) buildPlanSystemPrompt(settings repository.BrandSetting) string {
+func (s *PlanService) buildPlanSystemPrompt(settings repository.BrandSetting, brandContext string) string {
 	toneCustom := ""
 	if settings.ToneCustomNote != nil {
 		toneCustom = *settings.ToneCustomNote
@@ -450,7 +454,7 @@ func (s *PlanService) buildPlanSystemPrompt(settings repository.BrandSetting) st
 		eventsJSON = string(settings.UpcomingEvents)
 	}
 
-	return fmt.Sprintf(ai.PlanSystemPromptTemplate(),
+	prompt := fmt.Sprintf(ai.PlanSystemPromptTemplate(),
 		settings.ContentGoal,
 		strings.Join(settings.ToneTraits, ", "), toneCustom,
 		settings.MixUseful, settings.MixSelling, settings.MixPersonal, settings.MixEntertaining,
@@ -469,6 +473,12 @@ func (s *PlanService) buildPlanSystemPrompt(settings repository.BrandSetting) st
 		eventsJSON,
 		settings.ContentLanguage,
 	)
+
+	if brandContext != "" {
+		prompt += fmt.Sprintf("\n\nADDITIONAL CONTEXT FROM USER (incorporate into the plan):\n%s", brandContext)
+	}
+
+	return prompt
 }
 
 func buildFormatsString(s repository.BrandSetting) string {
