@@ -1,0 +1,96 @@
+package repository
+
+import (
+	"context"
+)
+
+const insertAuditLead = `-- name: InsertAuditLead :one
+INSERT INTO audit_leads (ig_username, ip_address, user_agent, locale, mock_score)
+VALUES ($1, $2, $3, $4, $5)
+RETURNING id, ig_username, ip_address, user_agent, locale, mock_score, created_at
+`
+
+type InsertAuditLeadParams struct {
+	IgUsername string  `json:"ig_username"`
+	IpAddress  *string `json:"ip_address"`
+	UserAgent  *string `json:"user_agent"`
+	Locale     *string `json:"locale"`
+	MockScore  *int32  `json:"mock_score"`
+}
+
+func (q *Queries) InsertAuditLead(ctx context.Context, arg InsertAuditLeadParams) (AuditLead, error) {
+	row := q.db.QueryRow(ctx, insertAuditLead,
+		arg.IgUsername,
+		arg.IpAddress,
+		arg.UserAgent,
+		arg.Locale,
+		arg.MockScore,
+	)
+	var i AuditLead
+	err := row.Scan(
+		&i.ID,
+		&i.IgUsername,
+		&i.IpAddress,
+		&i.UserAgent,
+		&i.Locale,
+		&i.MockScore,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const countAuditLeads = `-- name: CountAuditLeads :one
+SELECT COUNT(*) FROM audit_leads
+`
+
+func (q *Queries) CountAuditLeads(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, countAuditLeads)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countUniqueAuditLeads = `-- name: CountUniqueAuditLeads :one
+SELECT COUNT(DISTINCT ig_username) FROM audit_leads
+`
+
+func (q *Queries) CountUniqueAuditLeads(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, countUniqueAuditLeads)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const listRecentAuditLeads = `-- name: ListRecentAuditLeads :many
+SELECT id, ig_username, ip_address, user_agent, locale, mock_score, created_at FROM audit_leads
+ORDER BY created_at DESC
+LIMIT $1
+`
+
+func (q *Queries) ListRecentAuditLeads(ctx context.Context, limit int32) ([]AuditLead, error) {
+	rows, err := q.db.Query(ctx, listRecentAuditLeads, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AuditLead{}
+	for rows.Next() {
+		var i AuditLead
+		if err := rows.Scan(
+			&i.ID,
+			&i.IgUsername,
+			&i.IpAddress,
+			&i.UserAgent,
+			&i.Locale,
+			&i.MockScore,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}

@@ -267,6 +267,8 @@ type SubscriptionResponse struct {
 
 type PublicAuditRequest struct {
 	IGUsername string `json:"ig_username"`
+	Locale     string `json:"locale,omitempty"`
+	MockScore  int    `json:"mock_score,omitempty"`
 }
 
 type PublicAuditResponse struct {

@@ -152,3 +152,13 @@ type Payment struct {
 	CreatedAt          time.Time  `json:"created_at"`
 	UpdatedAt          time.Time  `json:"updated_at"`
 }
+
+type AuditLead struct {
+	ID         uuid.UUID `json:"id"`
+	IgUsername string    `json:"ig_username"`
+	IpAddress  *string   `json:"ip_address"`
+	UserAgent  *string   `json:"user_agent"`
+	Locale     *string   `json:"locale"`
+	MockScore  *int32    `json:"mock_score"`
+	CreatedAt  time.Time `json:"created_at"`
+}

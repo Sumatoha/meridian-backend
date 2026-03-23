@@ -18,8 +18,8 @@ RETURNING *;
 
 -- name: UpdatePlanCounters :exec
 UPDATE content_plans SET
-    approved_slots = (SELECT COUNT(*) FROM content_slots WHERE plan_id = $1 AND status IN ('approved', 'queued', 'publishing', 'published')),
-    published_slots = (SELECT COUNT(*) FROM content_slots WHERE plan_id = $1 AND status = 'published'),
+    approved_slots = (SELECT COUNT(*) FROM content_slots cs WHERE cs.plan_id = $1 AND cs.status IN ('approved', 'queued', 'publishing', 'published')),
+    published_slots = (SELECT COUNT(*) FROM content_slots cs WHERE cs.plan_id = $1 AND cs.status = 'published'),
     updated_at = NOW()
 WHERE id = $1;
 
