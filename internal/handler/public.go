@@ -71,9 +71,7 @@ func (h *PublicHandler) StartAudit(w http.ResponseWriter, r *http.Request) {
 	// Save lead with real score
 	h.saveLead(r, username, req.Locale, result.Score)
 
-	respondJSON(w, http.StatusOK, map[string]any{
-		"data": result,
-	})
+	respondJSON(w, http.StatusOK, result)
 }
 
 func (h *PublicHandler) GetAudit(w http.ResponseWriter, r *http.Request) {
