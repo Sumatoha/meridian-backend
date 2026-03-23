@@ -31,6 +31,18 @@ UPDATE instagram_accounts SET
     updated_at = NOW()
 WHERE id = $1;
 
+-- name: ConnectOAuthToAccount :one
+UPDATE instagram_accounts SET
+    ig_user_id = $2,
+    ig_username = $3,
+    access_token = $4,
+    token_expires_at = $5,
+    profile_pic_url = $6,
+    is_oauth_connected = TRUE,
+    updated_at = NOW()
+WHERE id = $1
+RETURNING *;
+
 -- name: GetAccountsWithExpiringTokens :many
 SELECT * FROM instagram_accounts
 WHERE is_oauth_connected = TRUE

@@ -13,12 +13,12 @@ SELECT * FROM content_slots WHERE id = $1;
 
 -- name: UpdateSlot :one
 UPDATE content_slots SET
-    caption = COALESCE($2, caption),
-    hashtags = COALESCE($3, hashtags),
-    scheduled_time = COALESCE($4, scheduled_time),
-    scheduled_date = COALESCE($5, scheduled_date),
-    status = COALESCE($6, status),
-    is_user_content = COALESCE($7, is_user_content),
+    caption = COALESCE(sqlc.narg('caption'), caption),
+    hashtags = COALESCE(sqlc.narg('hashtags'), hashtags),
+    scheduled_time = COALESCE(sqlc.narg('scheduled_time'), scheduled_time),
+    scheduled_date = COALESCE(sqlc.narg('scheduled_date'), scheduled_date),
+    status = COALESCE(sqlc.narg('status'), status),
+    is_user_content = COALESCE(sqlc.narg('is_user_content'), is_user_content),
     updated_at = NOW()
 WHERE id = $1
 RETURNING *;

@@ -245,6 +245,29 @@ type MediaUploadResponse struct {
 	Media []MediaItem `json:"media"`
 }
 
+// --- Tier ---
+
+type TierInfoResponse struct {
+	Plan                 string `json:"plan"`
+	MaxAccounts          int    `json:"max_accounts"`
+	AccountsUsed         int    `json:"accounts_used"`
+	PlanGenerationsLimit int    `json:"plan_generations_limit"` // -1 = unlimited
+	PlanGenerationsUsed  int    `json:"plan_generations_used"`
+	AutoPosting          bool   `json:"auto_posting"`
+	Export               bool   `json:"export"`
+	Sharing              bool   `json:"sharing"`
+	PeriodResetsAt       string `json:"period_resets_at"`
+}
+
+type TierLimitError struct {
+	Code      string `json:"code"`
+	Message   string `json:"message"`
+	Feature   string `json:"feature"`
+	Limit     int    `json:"limit"`
+	Used      int    `json:"used"`
+	UpgradeTo string `json:"upgrade_to,omitempty"`
+}
+
 // --- Billing ---
 
 type CheckoutRequest struct {

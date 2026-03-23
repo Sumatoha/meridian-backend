@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/meridian/api/internal/dto"
 	"github.com/meridian/api/internal/repository"
 	"github.com/meridian/api/internal/storage"
@@ -15,10 +16,11 @@ import (
 type SlotService struct {
 	queries *repository.Queries
 	storage *storage.Client
+	tierSvc *TierService
 }
 
-func NewSlotService(queries *repository.Queries, storageClient *storage.Client) *SlotService {
-	return &SlotService{queries: queries, storage: storageClient}
+func NewSlotService(queries *repository.Queries, storageClient *storage.Client, tierSvc *TierService) *SlotService {
+	return &SlotService{queries: queries, storage: storageClient, tierSvc: tierSvc}
 }
 
 // GetSlot returns a single content slot.
@@ -64,15 +66,31 @@ func (s *SlotService) ListSlots(ctx context.Context, planID uuid.UUID) ([]dto.Co
 
 // UpdateSlot updates editable fields of a content slot.
 func (s *SlotService) UpdateSlot(ctx context.Context, slotID uuid.UUID, req dto.UpdateSlotRequest) (dto.ContentSlotDTO, error) {
-	slot, err := s.queries.UpdateSlot(ctx, repository.UpdateSlotParams{
-		ID:            slotID,
-		Caption:       req.Caption,
-		Hashtags:      req.Hashtags,
-		ScheduledTime: nil, // handled below
-		ScheduledDate: nil,
-		Status:        req.Status,
-		IsUserContent: req.IsUserContent,
-	})
+	params := repository.UpdateSlotParams{
+		ID:       slotID,
+		Caption:  req.Caption,
+		Hashtags: req.Hashtags,
+		Status:   req.Status,
+	}
+	if req.IsUserContent != nil {
+		params.IsUserContent = pgtype.Bool{Bool: *req.IsUserContent, Valid: true}
+	}
+	if req.ScheduledTime != nil {
+		t, err := time.Parse("15:04", *req.ScheduledTime)
+		if err == nil {
+			params.ScheduledTime = pgtype.Time{
+				Microseconds: int64(t.Hour())*3600000000 + int64(t.Minute())*60000000,
+				Valid:        true,
+			}
+		}
+	}
+	if req.ScheduledDate != nil {
+		d, err := time.Parse("2006-01-02", *req.ScheduledDate)
+		if err == nil {
+			params.ScheduledDate = pgtype.Date{Time: d, Valid: true}
+		}
+	}
+	slot, err := s.queries.UpdateSlot(ctx, params)
 	if err != nil {
 		return dto.ContentSlotDTO{}, fmt.Errorf("update slot: %w", err)
 	}
@@ -118,10 +136,10 @@ func (s *SlotService) UpdateSlotMedia(ctx context.Context, slotID uuid.UUID, med
 
 // ApproveSlot marks a single slot as approved.
 func (s *SlotService) ApproveSlot(ctx context.Context, slotID uuid.UUID) (dto.ContentSlotDTO, error) {
-	status := "approved"
+	approved := "approved"
 	slot, err := s.queries.UpdateSlot(ctx, repository.UpdateSlotParams{
 		ID:     slotID,
-		Status: &status,
+		Status: &approved,
 	})
 	if err != nil {
 		return dto.ContentSlotDTO{}, fmt.Errorf("approve slot: %w", err)
@@ -129,24 +147,6 @@ func (s *SlotService) ApproveSlot(ctx context.Context, slotID uuid.UUID) (dto.Co
 
 	// Update plan counters
 	s.queries.UpdatePlanCounters(ctx, slot.PlanID)
-
-	d, err := slotToDTO(slot)
-	if err != nil {
-		return dto.ContentSlotDTO{}, err
-	}
-	return d, nil
-}
-
-// RegenerateSlot increments the regeneration counter and returns the slot.
-func (s *SlotService) RegenerateSlot(ctx context.Context, slotID uuid.UUID) (dto.ContentSlotDTO, error) {
-	if err := s.queries.IncrementSlotRegeneration(ctx, slotID); err != nil {
-		return dto.ContentSlotDTO{}, fmt.Errorf("regenerate slot: %w", err)
-	}
-
-	slot, err := s.queries.GetSlotByID(ctx, slotID)
-	if err != nil {
-		return dto.ContentSlotDTO{}, fmt.Errorf("regenerate slot: get: %w", err)
-	}
 
 	d, err := slotToDTO(slot)
 	if err != nil {
@@ -164,7 +164,7 @@ func (s *SlotService) MoveSlot(ctx context.Context, slotID uuid.UUID, newDate st
 
 	slot, err := s.queries.UpdateSlot(ctx, repository.UpdateSlotParams{
 		ID:            slotID,
-		ScheduledDate: &parsed,
+		ScheduledDate: pgtype.Date{Time: parsed, Valid: true},
 	})
 	if err != nil {
 		return dto.ContentSlotDTO{}, fmt.Errorf("move slot: %w", err)
@@ -199,7 +199,12 @@ func (s *SlotService) ApproveAll(ctx context.Context, planID uuid.UUID) (dto.App
 }
 
 // StartPosting queues all approved slots with media for publishing.
-func (s *SlotService) StartPosting(ctx context.Context, planID uuid.UUID) (dto.StartPostingResponse, error) {
+// Requires the user's tier to allow auto-posting.
+func (s *SlotService) StartPosting(ctx context.Context, userID, planID uuid.UUID) (dto.StartPostingResponse, error) {
+	if err := s.tierSvc.CheckAutoPosting(ctx, userID); err != nil {
+		return dto.StartPostingResponse{}, err
+	}
+
 	queuedCount, err := s.queries.QueueApprovedSlots(ctx, planID)
 	if err != nil {
 		return dto.StartPostingResponse{}, fmt.Errorf("start posting: %w", err)

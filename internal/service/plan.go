@@ -17,11 +17,12 @@ import (
 type PlanService struct {
 	queries  *repository.Queries
 	aiClient *ai.Client
+	tierSvc  *TierService
 	logger   *slog.Logger
 }
 
-func NewPlanService(queries *repository.Queries, aiClient *ai.Client, logger *slog.Logger) *PlanService {
-	return &PlanService{queries: queries, aiClient: aiClient, logger: logger}
+func NewPlanService(queries *repository.Queries, aiClient *ai.Client, tierSvc *TierService, logger *slog.Logger) *PlanService {
+	return &PlanService{queries: queries, aiClient: aiClient, tierSvc: tierSvc, logger: logger}
 }
 
 // GeneratePlan creates a new content plan using AI.
@@ -38,7 +39,21 @@ type GeneratePlanOptions struct {
 	BrandContext     string
 }
 
-func (s *PlanService) GeneratePlan(ctx context.Context, accountID uuid.UUID, startDate time.Time, opts *GeneratePlanOptions) (uuid.UUID, error) {
+func (s *PlanService) GeneratePlan(ctx context.Context, userID, accountID uuid.UUID, startDate time.Time, opts *GeneratePlanOptions) (uuid.UUID, error) {
+	// Check tier limit before expensive AI call
+	if err := s.tierSvc.CheckPlanGeneration(ctx, userID); err != nil {
+		return uuid.Nil, err
+	}
+
+	// Delete existing plans for this account (enforce 1 active plan per account)
+	if err := s.queries.DeletePlansByAccountID(ctx, accountID); err != nil {
+		s.logger.Error("failed to delete existing plans",
+			slog.String("account_id", accountID.String()),
+			slog.String("error", err.Error()),
+		)
+		return uuid.Nil, fmt.Errorf("generate plan: delete existing: %w", err)
+	}
+
 	// Load settings (use defaults if not configured yet)
 	settings, err := s.queries.GetBrandSettings(ctx, accountID)
 	if err != nil {
@@ -361,6 +376,15 @@ func (s *PlanService) GeneratePlan(ctx context.Context, accountID uuid.UUID, sta
 			slog.Int("failed", len(slots)-inserted),
 			slog.Int("inserted", inserted),
 		)
+	}
+
+	// Increment monthly usage counter after successful generation
+	if err := s.tierSvc.IncrementPlanGeneration(ctx, userID); err != nil {
+		s.logger.Error("failed to increment plan generation usage",
+			slog.String("user_id", userID.String()),
+			slog.String("error", err.Error()),
+		)
+		// Don't fail the whole operation — plan was already created
 	}
 
 	return plan.ID, nil

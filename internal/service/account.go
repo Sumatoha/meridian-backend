@@ -18,10 +18,11 @@ type AccountService struct {
 	queries     *repository.Queries
 	oauthClient *instagram.OAuthClient
 	appSecret   string
+	tierSvc     *TierService
 }
 
-func NewAccountService(db *pgxpool.Pool, queries *repository.Queries, oauthClient *instagram.OAuthClient, appSecret string) *AccountService {
-	return &AccountService{db: db, queries: queries, oauthClient: oauthClient, appSecret: appSecret}
+func NewAccountService(db *pgxpool.Pool, queries *repository.Queries, oauthClient *instagram.OAuthClient, appSecret string, tierSvc *TierService) *AccountService {
+	return &AccountService{db: db, queries: queries, oauthClient: oauthClient, appSecret: appSecret, tierSvc: tierSvc}
 }
 
 // EnsureUser creates or updates the internal user record from a Supabase JWT.
@@ -39,6 +40,13 @@ func (s *AccountService) EnsureUser(ctx context.Context, supabaseUID uuid.UUID, 
 // CreateAccount links an Instagram username (manual, no OAuth).
 func (s *AccountService) CreateAccount(ctx context.Context, req dto.CreateAccountRequest) (dto.AccountResponse, error) {
 	userID := auth.UserID(ctx)
+
+	// Check account limit for user's tier
+	if s.tierSvc != nil {
+		if err := s.tierSvc.CheckAccountCreation(ctx, userID); err != nil {
+			return dto.AccountResponse{}, err
+		}
+	}
 
 	account, err := s.queries.CreateAccount(ctx, repository.CreateAccountParams{
 		UserID:     userID,
@@ -152,10 +160,10 @@ func (s *AccountService) HandleOAuthCallback(ctx context.Context, code, state st
 		// Connect OAuth to existing account
 		account, err = s.queries.ConnectOAuthToAccount(ctx, repository.ConnectOAuthToAccountParams{
 			ID:             *accountID,
-			IgUserID:       igUserID,
+			IgUserID:       &igUserID,
 			IgUsername:     username,
-			AccessToken:    longToken,
-			TokenExpiresAt: expiresAt,
+			AccessToken:    &longToken,
+			TokenExpiresAt: &expiresAt,
 			ProfilePicUrl:  &profilePicURL,
 		})
 		if err != nil {
@@ -166,10 +174,9 @@ func (s *AccountService) HandleOAuthCallback(ctx context.Context, code, state st
 		account, err = s.queries.CreateOAuthAccount(ctx, repository.CreateOAuthAccountParams{
 			UserID:         userID,
 			IgUsername:     username,
-			IgUserID:       igUserID,
-			AccessToken:    longToken,
-			TokenExpiresAt: expiresAt,
-			ProfilePicUrl:  &profilePicURL,
+			IgUserID:       &igUserID,
+			AccessToken:    &longToken,
+			TokenExpiresAt: &expiresAt,
 		})
 		if err != nil {
 			return dto.OAuthCallbackResponse{}, fmt.Errorf("create oauth account: %w", err)

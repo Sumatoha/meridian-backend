@@ -84,10 +84,11 @@ func main() {
 	storageClient := storage.NewClient(cfg.SupabaseStorageURL, cfg.SupabaseServiceKey)
 
 	// Initialize services
-	accountSvc := service.NewAccountService(pool, queries, igOAuthClient, cfg.MetaAppSecret)
+	tierSvc := service.NewTierService(queries)
+	accountSvc := service.NewAccountService(pool, queries, igOAuthClient, cfg.MetaAppSecret, tierSvc)
 	analysisSvc := service.NewAnalysisService(queries, aiClient, igScraper, igReader, logger)
-	planSvc := service.NewPlanService(queries, aiClient, logger)
-	slotSvc := service.NewSlotService(queries, storageClient)
+	planSvc := service.NewPlanService(queries, aiClient, tierSvc, logger)
+	slotSvc := service.NewSlotService(queries, storageClient, tierSvc)
 	publisherSvc := service.NewPublisherService(queries, igPublisher, storageClient, logger)
 	billingSvc := service.NewBillingService(queries, cfg.DodoAPIKey, cfg.KaspiMerchantID, cfg.KaspiSecret)
 
@@ -98,7 +99,8 @@ func main() {
 	accountH := handler.NewAccountHandler(accountSvc, logger)
 	settingsH := handler.NewSettingsHandler(queries, logger)
 	analysisH := handler.NewAnalysisHandler(analysisSvc, accountSvc, logger)
-	planH := handler.NewPlanHandler(planSvc, accountSvc, logger)
+	planH := handler.NewPlanHandler(planSvc, accountSvc, tierSvc, logger)
+	tierH := handler.NewTierHandler(tierSvc, logger)
 	slotH := handler.NewSlotHandler(slotSvc, logger)
 	mediaH := handler.NewMediaHandler(slotSvc, storageClient, queries, logger)
 	billingH := handler.NewBillingHandler(billingSvc, logger)
@@ -222,7 +224,6 @@ func main() {
 		r.Get("/slots/{slot_id}", slotH.Get)
 		r.Patch("/slots/{slot_id}", slotH.Update)
 		r.Post("/slots/{slot_id}/approve", slotH.Approve)
-		r.Post("/slots/{slot_id}/regenerate", slotH.Regenerate)
 		r.Post("/slots/{slot_id}/move", slotH.Move)
 
 		// Media
@@ -232,6 +233,9 @@ func main() {
 		// Plan actions
 		r.Post("/plans/{plan_id}/approve-all", slotH.ApproveAll)
 		r.Post("/plans/{plan_id}/start-posting", slotH.StartPosting)
+
+		// Tier info
+		r.Get("/tier", tierH.GetTierInfo)
 
 		// Billing
 		r.Post("/billing/checkout", billingH.Checkout)

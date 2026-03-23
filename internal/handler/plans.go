@@ -2,11 +2,13 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/meridian/api/internal/auth"
 	"github.com/meridian/api/internal/dto"
 	"github.com/meridian/api/internal/service"
 )
@@ -14,11 +16,12 @@ import (
 type PlanHandler struct {
 	planSvc    *service.PlanService
 	accountSvc *service.AccountService
+	tierSvc    *service.TierService
 	logger     *slog.Logger
 }
 
-func NewPlanHandler(planSvc *service.PlanService, accountSvc *service.AccountService, logger *slog.Logger) *PlanHandler {
-	return &PlanHandler{planSvc: planSvc, accountSvc: accountSvc, logger: logger}
+func NewPlanHandler(planSvc *service.PlanService, accountSvc *service.AccountService, tierSvc *service.TierService, logger *slog.Logger) *PlanHandler {
+	return &PlanHandler{planSvc: planSvc, accountSvc: accountSvc, tierSvc: tierSvc, logger: logger}
 }
 
 func (h *PlanHandler) Generate(w http.ResponseWriter, r *http.Request) {
@@ -39,6 +42,26 @@ func (h *PlanHandler) Generate(w http.ResponseWriter, r *http.Request) {
 		// Continue with defaults — body is optional
 	}
 
+	// Check tier limit synchronously — return 403 immediately if at limit
+	userID := auth.UserID(r.Context())
+	if err := h.tierSvc.CheckPlanGeneration(r.Context(), userID); err != nil {
+		var tierErr *service.TierError
+		if errors.As(err, &tierErr) {
+			respondJSON(w, http.StatusForbidden, dto.TierLimitError{
+				Code:      "tier_limit",
+				Message:   tierErr.Message,
+				Feature:   tierErr.Feature,
+				Limit:     tierErr.Limit,
+				Used:      tierErr.Used,
+				UpgradeTo: tierErr.UpgradeTo,
+			})
+			return
+		}
+		h.logger.Error("tier check failed", slog.String("error", err.Error()))
+		respondError(w, http.StatusInternalServerError, "internal_error", "failed to check tier limits")
+		return
+	}
+
 	startDate := time.Now().AddDate(0, 0, 1) // tomorrow
 	if req.StartDate != nil {
 		parsed, err := time.Parse("2006-01-02", *req.StartDate)
@@ -48,7 +71,7 @@ func (h *PlanHandler) Generate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Background generation with detached context.
-	// Returns 202 immediately. Frontend polls GET /plans list until new plan appears with slots.
+	// Returns 202 immediately. Frontend polls GET /plans to check when ready.
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 		defer cancel()
@@ -70,7 +93,7 @@ func (h *PlanHandler) Generate(w http.ResponseWriter, r *http.Request) {
 		if req.BrandContext != nil {
 			opts.BrandContext = *req.BrandContext
 		}
-		planID, err := h.planSvc.GeneratePlan(ctx, accountID, startDate, opts)
+		planID, err := h.planSvc.GeneratePlan(ctx, userID, accountID, startDate, opts)
 		if err != nil {
 			h.logger.Error("plan generation failed",
 				slog.String("account_id", accountID.String()),

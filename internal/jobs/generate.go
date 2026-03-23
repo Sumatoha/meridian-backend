@@ -13,6 +13,7 @@ import (
 
 // GeneratePlanArgs are the arguments for the plan generation job.
 type GeneratePlanArgs struct {
+	UserID    uuid.UUID `json:"user_id"`
 	AccountID uuid.UUID `json:"account_id"`
 	StartDate string    `json:"start_date"` // "2006-01-02" format
 }
@@ -41,7 +42,7 @@ func (w *GeneratePlanWorker) Work(ctx context.Context, job *river.Job[GeneratePl
 		return fmt.Errorf("generate plan job: parse start date: %w", err)
 	}
 
-	planID, err := w.planSvc.GeneratePlan(ctx, job.Args.AccountID, startDate, nil)
+	planID, err := w.planSvc.GeneratePlan(ctx, job.Args.UserID, job.Args.AccountID, startDate, nil)
 	if err != nil {
 		return fmt.Errorf("generate plan job: %w", err)
 	}

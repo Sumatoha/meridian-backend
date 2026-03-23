@@ -115,9 +115,9 @@ func (s *BillingService) createKaspiCheckout(_ context.Context, _ uuid.UUID, _ s
 func planPrice(plan string) int32 {
 	switch plan {
 	case "pro":
-		return 1990 // $19.90
-	case "agency":
-		return 4990 // $49.90
+		return 999 // $9.99
+	case "business":
+		return 2899 // $28.99
 	default:
 		return 0
 	}

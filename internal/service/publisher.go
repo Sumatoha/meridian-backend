@@ -11,6 +11,7 @@ import (
 	"github.com/meridian/api/internal/instagram"
 	"github.com/meridian/api/internal/repository"
 	"github.com/meridian/api/internal/storage"
+	"github.com/meridian/api/internal/tier"
 )
 
 type PublisherService struct {
@@ -83,7 +84,51 @@ func (ps *PublisherService) tick(ctx context.Context) {
 			)
 			continue
 		}
-		if err := ps.PublishSlotByRecord(ctx, slotWithAccount.ContentSlot, account); err != nil {
+
+		// Safety net: verify account owner's tier allows auto-posting
+		userPlan, err := ps.queries.GetUserPlan(ctx, account.UserID)
+		if err != nil {
+			ps.logger.Error("get user plan for publish failed",
+				slog.String("slot_id", slotWithAccount.ID.String()),
+				slog.String("error", err.Error()),
+			)
+			continue
+		}
+		tierCfg := tier.Get(userPlan)
+		if !tierCfg.AutoPosting {
+			ps.logger.Warn("skipping publish for free tier user",
+				slog.String("slot_id", slotWithAccount.ID.String()),
+				slog.String("user_id", account.UserID.String()),
+			)
+			continue
+		}
+
+		slot := repository.ContentSlot{
+			ID:                slotWithAccount.ID,
+			PlanID:            slotWithAccount.PlanID,
+			DayNumber:         slotWithAccount.DayNumber,
+			ScheduledDate:     slotWithAccount.ScheduledDate,
+			ScheduledTime:     slotWithAccount.ScheduledTime,
+			Title:             slotWithAccount.Title,
+			ContentType:       slotWithAccount.ContentType,
+			Format:            slotWithAccount.Format,
+			Brief:             slotWithAccount.Brief,
+			Caption:           slotWithAccount.Caption,
+			Hashtags:          slotWithAccount.Hashtags,
+			Cta:               slotWithAccount.Cta,
+			Media:             slotWithAccount.Media,
+			Status:            slotWithAccount.Status,
+			IsUserContent:     slotWithAccount.IsUserContent,
+			PublishedAt:       slotWithAccount.PublishedAt,
+			IgPostID:          slotWithAccount.IgPostID,
+			IgPostUrl:         slotWithAccount.IgPostUrl,
+			ErrorMessage:      slotWithAccount.ErrorMessage,
+			RetryCount:        slotWithAccount.RetryCount,
+			RegenerationCount: slotWithAccount.RegenerationCount,
+			CreatedAt:         slotWithAccount.CreatedAt,
+			UpdatedAt:         slotWithAccount.UpdatedAt,
+		}
+		if err := ps.PublishSlotByRecord(ctx, slot, account); err != nil {
 			ps.logger.Error("publish failed",
 				slog.String("slot_id", slotWithAccount.ID.String()),
 				slog.String("error", err.Error()),

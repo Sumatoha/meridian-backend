@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"errors"
 	"log/slog"
 	"net/http"
 
@@ -45,6 +46,18 @@ func (h *AccountHandler) Create(w http.ResponseWriter, r *http.Request) {
 
 	account, err := h.svc.CreateAccount(r.Context(), req)
 	if err != nil {
+		var tierErr *service.TierError
+		if errors.As(err, &tierErr) {
+			respondJSON(w, http.StatusForbidden, dto.TierLimitError{
+				Code:      "tier_limit",
+				Message:   tierErr.Message,
+				Feature:   tierErr.Feature,
+				Limit:     tierErr.Limit,
+				Used:      tierErr.Used,
+				UpgradeTo: tierErr.UpgradeTo,
+			})
+			return
+		}
 		h.logger.Error("accounts.create: failed",
 			slog.String("error", err.Error()),
 			slog.String("user_id", userID.String()),

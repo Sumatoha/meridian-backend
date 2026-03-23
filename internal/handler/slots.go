@@ -1,10 +1,12 @@
 package handler
 
 import (
+	"errors"
 	"log/slog"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/meridian/api/internal/auth"
 	"github.com/meridian/api/internal/dto"
 	"github.com/meridian/api/internal/service"
 )
@@ -108,23 +110,6 @@ func (h *SlotHandler) Approve(w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, http.StatusOK, slot)
 }
 
-func (h *SlotHandler) Regenerate(w http.ResponseWriter, r *http.Request) {
-	slotID, ok := parseUUID(chi.URLParam(r, "slot_id"), h.logger)
-	if !ok {
-		respondError(w, http.StatusBadRequest, "invalid_id", "invalid slot ID")
-		return
-	}
-
-	slot, err := h.slotSvc.RegenerateSlot(r.Context(), slotID)
-	if err != nil {
-		h.logger.Error("regenerate slot failed", slog.String("error", err.Error()))
-		respondError(w, http.StatusInternalServerError, "internal_error", "failed to regenerate slot")
-		return
-	}
-
-	respondJSON(w, http.StatusOK, slot)
-}
-
 func (h *SlotHandler) Move(w http.ResponseWriter, r *http.Request) {
 	slotID, ok := parseUUID(chi.URLParam(r, "slot_id"), h.logger)
 	if !ok {
@@ -157,8 +142,19 @@ func (h *SlotHandler) StartPosting(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := h.slotSvc.StartPosting(r.Context(), planID)
+	userID := auth.UserID(r.Context())
+	result, err := h.slotSvc.StartPosting(r.Context(), userID, planID)
 	if err != nil {
+		var tierErr *service.TierError
+		if errors.As(err, &tierErr) {
+			respondJSON(w, http.StatusForbidden, dto.TierLimitError{
+				Code:      "tier_limit",
+				Message:   tierErr.Message,
+				Feature:   tierErr.Feature,
+				UpgradeTo: tierErr.UpgradeTo,
+			})
+			return
+		}
 		h.logger.Error("start posting failed", slog.String("error", err.Error()))
 		respondError(w, http.StatusInternalServerError, "internal_error", "failed to start posting")
 		return
