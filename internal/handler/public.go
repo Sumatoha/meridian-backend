@@ -1,18 +1,33 @@
 package handler
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
+	"regexp"
+	"strings"
+	"time"
 
 	"github.com/meridian/api/internal/dto"
 )
 
-type PublicHandler struct {
-	logger *slog.Logger
+var igUsernameRegex = regexp.MustCompile(`^[a-zA-Z0-9._]{1,30}$`)
+
+// PublicAnalyzer is the subset of AnalysisService needed by PublicHandler.
+type PublicAnalyzer interface {
+	AnalyzePublic(ctx context.Context, username string) (dto.PublicAuditResult, error)
 }
 
-func NewPublicHandler(logger *slog.Logger) *PublicHandler {
-	return &PublicHandler{logger: logger}
+type PublicHandler struct {
+	analyzer PublicAnalyzer
+	logger   *slog.Logger
+}
+
+func NewPublicHandler(analyzer PublicAnalyzer, logger *slog.Logger) *PublicHandler {
+	return &PublicHandler{
+		analyzer: analyzer,
+		logger:   logger,
+	}
 }
 
 func (h *PublicHandler) StartAudit(w http.ResponseWriter, r *http.Request) {
@@ -27,30 +42,44 @@ func (h *PublicHandler) StartAudit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.IGUsername == "" {
-		h.logger.Warn("audit: empty ig_username",
-			slog.String("remote_addr", r.RemoteAddr),
-		)
+	// Normalize: strip @, trim whitespace
+	username := strings.TrimSpace(req.IGUsername)
+	username = strings.TrimPrefix(username, "@")
+
+	if username == "" {
 		respondError(w, http.StatusBadRequest, "validation_error", "ig_username is required")
 		return
 	}
 
+	if !igUsernameRegex.MatchString(username) {
+		respondError(w, http.StatusBadRequest, "validation_error", "invalid Instagram username")
+		return
+	}
+
 	h.logger.Info("audit: started",
-		slog.String("ig_username", req.IGUsername),
+		slog.String("ig_username", username),
 		slog.String("remote_addr", r.RemoteAddr),
 	)
 
-	// TODO: Enqueue limited audit job
-	// For now, return a placeholder job ID
-	respondJSON(w, http.StatusAccepted, map[string]string{
-		"job_id": "placeholder",
-		"status": "pending",
+	// Run synchronous analysis (rate-limited to 3/hour per IP at router level)
+	result, err := h.analyzer.AnalyzePublic(r.Context(), username)
+	if err != nil {
+		h.logger.Error("audit: analysis failed",
+			slog.String("ig_username", username),
+			slog.String("error", err.Error()),
+		)
+		respondError(w, http.StatusUnprocessableEntity, "analysis_failed", "could not analyze this profile — it may be private or have no posts")
+		return
+	}
+
+	result.CreatedAt = time.Now().UTC().Format(time.RFC3339)
+
+	respondJSON(w, http.StatusOK, map[string]any{
+		"data": result,
 	})
 }
 
 func (h *PublicHandler) GetAudit(w http.ResponseWriter, r *http.Request) {
-	// TODO: Implement audit result retrieval
-	respondJSON(w, http.StatusOK, dto.PublicAuditResponse{
-		Status: "pending",
-	})
+	// Not used anymore — audit is synchronous
+	respondError(w, http.StatusGone, "deprecated", "audit results are returned inline")
 }
