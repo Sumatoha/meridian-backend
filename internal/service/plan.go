@@ -28,7 +28,14 @@ func NewPlanService(queries *repository.Queries, aiClient *ai.Client, logger *sl
 // langOverride optionally overrides the content_language from brand settings.
 // GeneratePlanOptions contains optional overrides for plan generation.
 type GeneratePlanOptions struct {
-	ContentLanguage string // if set, overrides brand settings language
+	ContentLanguage  string
+	PostingFrequency string
+	ContentGoal      string
+	MixUseful        *int
+	MixSelling       *int
+	MixPersonal      *int
+	MixEntertaining  *int
+	BrandContext     string
 }
 
 func (s *PlanService) GeneratePlan(ctx context.Context, accountID uuid.UUID, startDate time.Time, opts *GeneratePlanOptions) (uuid.UUID, error) {
@@ -61,8 +68,28 @@ func (s *PlanService) GeneratePlan(ctx context.Context, accountID uuid.UUID, sta
 	}
 
 	// Apply overrides if provided
-	if opts != nil && opts.ContentLanguage != "" {
-		settings.ContentLanguage = opts.ContentLanguage
+	if opts != nil {
+		if opts.ContentLanguage != "" {
+			settings.ContentLanguage = opts.ContentLanguage
+		}
+		if opts.PostingFrequency != "" {
+			settings.PostingFrequency = opts.PostingFrequency
+		}
+		if opts.ContentGoal != "" {
+			settings.ContentGoal = opts.ContentGoal
+		}
+		if opts.MixUseful != nil {
+			settings.MixUseful = int32(*opts.MixUseful)
+		}
+		if opts.MixSelling != nil {
+			settings.MixSelling = int32(*opts.MixSelling)
+		}
+		if opts.MixPersonal != nil {
+			settings.MixPersonal = int32(*opts.MixPersonal)
+		}
+		if opts.MixEntertaining != nil {
+			settings.MixEntertaining = int32(*opts.MixEntertaining)
+		}
 	}
 
 	// Calculate end date (30 days) and total slots based on frequency
