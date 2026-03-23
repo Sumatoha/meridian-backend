@@ -24,7 +24,11 @@ func NewClient(apiKey string) *Client {
 	return &Client{
 		apiKey: apiKey,
 		httpClient: &http.Client{
-			Timeout: 300 * time.Second, // 5 min — large generations need time
+			Timeout: 300 * time.Second,
+			Transport: &http.Transport{
+				MaxIdleConnsPerHost: 10,
+				MaxConnsPerHost:     10,
+			},
 		},
 	}
 }
