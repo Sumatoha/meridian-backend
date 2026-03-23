@@ -105,7 +105,7 @@ func main() {
 	slotH := handler.NewSlotHandler(slotSvc, logger)
 	mediaH := handler.NewMediaHandler(slotSvc, storageClient, queries, logger)
 	billingH := handler.NewBillingHandler(billingSvc, logger)
-	publicH := handler.NewPublicHandler(analysisSvc, logger)
+	publicH := handler.NewPublicHandler(logger)
 
 	// Auth middleware — JWKS (RS256) with HMAC fallback
 	jwksURL := ""
