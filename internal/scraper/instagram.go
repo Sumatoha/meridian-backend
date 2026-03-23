@@ -149,11 +149,16 @@ func (s *Scraper) scrapeViaAPI(ctx context.Context, username string) (ProfileInf
 		if resp.StatusCode == http.StatusOK {
 			profile, posts, err := parseWebProfileInfo(body)
 			if err != nil {
+				bodySnippet := string(body)
+				if len(bodySnippet) > 300 {
+					bodySnippet = bodySnippet[:300]
+				}
 				lastErr = fmt.Errorf("attempt %d: parse error: %w", attempt+1, err)
 				s.logger.Warn("scraper: API parse failed",
 					slog.Int("attempt", attempt+1),
 					slog.String("error", err.Error()),
 					slog.Int("body_len", len(body)),
+					slog.String("body", bodySnippet),
 				)
 				continue
 			}
@@ -390,40 +395,93 @@ func (s *Scraper) scrapeViaHeadless(ctx context.Context, username string) (Profi
 	// Last resort: parse meta tags for minimal profile info
 	profile, err = parseMetaTags(html, username)
 	if err == nil && profile.Username != "" {
-		s.logger.Info("scraper: got profile from meta tags (no posts)", slog.String("username", username))
+		s.logger.Info("scraper: got profile from meta tags (no posts)",
+			slog.String("username", username),
+			slog.Int("followers", profile.FollowersCount),
+		)
 		return profile, nil, nil
 	}
+
+	// Log a snippet of the HTML title/meta area to debug what Instagram served
+	titleSnippet := ""
+	if idx := strings.Index(html, "<title"); idx != -1 {
+		end := idx + 200
+		if end > len(html) {
+			end = len(html)
+		}
+		titleSnippet = html[idx:end]
+	}
+	s.logger.Warn("scraper: headless could not extract any data",
+		slog.String("username", username),
+		slog.String("title_area", titleSnippet),
+		slog.String("meta_err", fmt.Sprint(err)),
+	)
 
 	return ProfileInfo{}, nil, fmt.Errorf("no profile data found")
 }
 
 // parseMetaTags extracts basic profile info from og: meta tags.
 // Instagram still serves these for SEO even on login-walled pages.
+// Handles both attribute orderings: property before content and vice versa.
 func parseMetaTags(html, username string) (ProfileInfo, error) {
 	profile := ProfileInfo{Username: username}
 
-	// og:description typically contains: "X Followers, Y Following, Z Posts - ..."
-	descRe := regexp.MustCompile(`<meta\s+(?:property|name)="og:description"\s+content="([^"]*)"`)
-	if m := descRe.FindStringSubmatch(html); len(m) > 1 {
-		desc := m[1]
-		// Parse follower count from "1,234 Followers" or "1.2K Followers"
-		followersRe := regexp.MustCompile(`([\d,.]+[KkMm]?)\s+[Ff]ollowers`)
-		if fm := followersRe.FindStringSubmatch(desc); len(fm) > 1 {
-			profile.FollowersCount = parseCount(fm[1])
+	// Extract og:description — handles both orderings:
+	//   <meta property="og:description" content="..." />
+	//   <meta content="..." property="og:description" />
+	desc := extractMetaContent(html, "og:description")
+	if desc != "" {
+		// Parse follower count: "123K Followers" / "1,234 Followers" / "123 тыс. подписчиков"
+		followersPatterns := []*regexp.Regexp{
+			regexp.MustCompile(`([\d,.]+[KkMm]?)\s+[Ff]ollowers`),
+			regexp.MustCompile(`([\d,.]+[KkMm]?)\s+подписчик`),
+			regexp.MustCompile(`([\d,.]+)\s*тыс`),
+			regexp.MustCompile(`([\d,.]+)\s*млн`),
+		}
+		for _, re := range followersPatterns {
+			if fm := re.FindStringSubmatch(desc); len(fm) > 1 {
+				profile.FollowersCount = parseCount(fm[1])
+				break
+			}
 		}
 	}
 
-	// og:image for profile pic
-	imgRe := regexp.MustCompile(`<meta\s+(?:property|name)="og:image"\s+content="([^"]*)"`)
-	if m := imgRe.FindStringSubmatch(html); len(m) > 1 {
-		profile.ProfilePicURL = m[1]
+	// Extract og:image
+	profile.ProfilePicURL = extractMetaContent(html, "og:image")
+
+	// Also try description meta (not og:)
+	if desc == "" {
+		desc = extractMetaContent(html, "description")
 	}
 
 	if profile.FollowersCount > 0 || profile.ProfilePicURL != "" {
 		return profile, nil
 	}
 
-	return ProfileInfo{}, fmt.Errorf("no meta tags found")
+	return ProfileInfo{}, fmt.Errorf("no meta tags found (og:desc=%q, og:img=%q)", desc, profile.ProfilePicURL)
+}
+
+// extractMetaContent finds <meta> tag content by property or name attribute.
+// Handles any attribute ordering within the tag.
+func extractMetaContent(html, name string) string {
+	// Find all meta tags
+	metaRe := regexp.MustCompile(`<meta\s[^>]*>`)
+	for _, tag := range metaRe.FindAllString(html, -1) {
+		// Check if this tag has the right property/name
+		hasName := strings.Contains(tag, `property="`+name+`"`) ||
+			strings.Contains(tag, `name="`+name+`"`) ||
+			strings.Contains(tag, `property='`+name+`'`) ||
+			strings.Contains(tag, `name='`+name+`'`)
+		if !hasName {
+			continue
+		}
+		// Extract content value
+		contentRe := regexp.MustCompile(`content=["']([^"']*)["']`)
+		if m := contentRe.FindStringSubmatch(tag); len(m) > 1 {
+			return m[1]
+		}
+	}
+	return ""
 }
 
 // parseCount converts "1,234" or "1.2K" or "3M" to int.
