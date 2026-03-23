@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/meridian/api/internal/dto"
@@ -115,14 +116,76 @@ func (s *SlotService) UpdateSlotMedia(ctx context.Context, slotID uuid.UUID, med
 	return d, nil
 }
 
-// ApproveAll approves all draft slots that have media.
+// ApproveSlot marks a single slot as approved.
+func (s *SlotService) ApproveSlot(ctx context.Context, slotID uuid.UUID) (dto.ContentSlotDTO, error) {
+	status := "approved"
+	slot, err := s.queries.UpdateSlot(ctx, repository.UpdateSlotParams{
+		ID:     slotID,
+		Status: &status,
+	})
+	if err != nil {
+		return dto.ContentSlotDTO{}, fmt.Errorf("approve slot: %w", err)
+	}
+
+	// Update plan counters
+	s.queries.UpdatePlanCounters(ctx, slot.PlanID)
+
+	d, err := slotToDTO(slot)
+	if err != nil {
+		return dto.ContentSlotDTO{}, err
+	}
+	return d, nil
+}
+
+// RegenerateSlot increments the regeneration counter and returns the slot.
+func (s *SlotService) RegenerateSlot(ctx context.Context, slotID uuid.UUID) (dto.ContentSlotDTO, error) {
+	if err := s.queries.IncrementSlotRegeneration(ctx, slotID); err != nil {
+		return dto.ContentSlotDTO{}, fmt.Errorf("regenerate slot: %w", err)
+	}
+
+	slot, err := s.queries.GetSlotByID(ctx, slotID)
+	if err != nil {
+		return dto.ContentSlotDTO{}, fmt.Errorf("regenerate slot: get: %w", err)
+	}
+
+	d, err := slotToDTO(slot)
+	if err != nil {
+		return dto.ContentSlotDTO{}, err
+	}
+	return d, nil
+}
+
+// MoveSlot changes the scheduled date of a slot.
+func (s *SlotService) MoveSlot(ctx context.Context, slotID uuid.UUID, newDate string) (dto.ContentSlotDTO, error) {
+	parsed, err := time.Parse("2006-01-02", newDate)
+	if err != nil {
+		return dto.ContentSlotDTO{}, fmt.Errorf("move slot: invalid date %q: %w", newDate, err)
+	}
+
+	slot, err := s.queries.UpdateSlot(ctx, repository.UpdateSlotParams{
+		ID:            slotID,
+		ScheduledDate: &parsed,
+	})
+	if err != nil {
+		return dto.ContentSlotDTO{}, fmt.Errorf("move slot: %w", err)
+	}
+
+	d, err := slotToDTO(slot)
+	if err != nil {
+		return dto.ContentSlotDTO{}, err
+	}
+	return d, nil
+}
+
+// ApproveAll approves all draft slots (media not required for approval).
 func (s *SlotService) ApproveAll(ctx context.Context, planID uuid.UUID) (dto.ApproveAllResponse, error) {
 	approvedCount, err := s.queries.ApproveAllDraftSlots(ctx, planID)
 	if err != nil {
 		return dto.ApproveAllResponse{}, fmt.Errorf("approve all: %w", err)
 	}
 
-	missingMedia, err := s.queries.CountSlotsWithoutMedia(ctx, planID)
+	// Count how many approved slots still need media (for UI feedback)
+	missingMedia, err := s.queries.CountApprovedWithoutMedia(ctx, planID)
 	if err != nil {
 		return dto.ApproveAllResponse{}, fmt.Errorf("count missing media: %w", err)
 	}

@@ -91,6 +91,65 @@ func (h *SlotHandler) ApproveAll(w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, http.StatusOK, result)
 }
 
+func (h *SlotHandler) Approve(w http.ResponseWriter, r *http.Request) {
+	slotID, ok := parseUUID(chi.URLParam(r, "slot_id"), h.logger)
+	if !ok {
+		respondError(w, http.StatusBadRequest, "invalid_id", "invalid slot ID")
+		return
+	}
+
+	slot, err := h.slotSvc.ApproveSlot(r.Context(), slotID)
+	if err != nil {
+		h.logger.Error("approve slot failed", slog.String("error", err.Error()))
+		respondError(w, http.StatusInternalServerError, "internal_error", "failed to approve slot")
+		return
+	}
+
+	respondJSON(w, http.StatusOK, slot)
+}
+
+func (h *SlotHandler) Regenerate(w http.ResponseWriter, r *http.Request) {
+	slotID, ok := parseUUID(chi.URLParam(r, "slot_id"), h.logger)
+	if !ok {
+		respondError(w, http.StatusBadRequest, "invalid_id", "invalid slot ID")
+		return
+	}
+
+	slot, err := h.slotSvc.RegenerateSlot(r.Context(), slotID)
+	if err != nil {
+		h.logger.Error("regenerate slot failed", slog.String("error", err.Error()))
+		respondError(w, http.StatusInternalServerError, "internal_error", "failed to regenerate slot")
+		return
+	}
+
+	respondJSON(w, http.StatusOK, slot)
+}
+
+func (h *SlotHandler) Move(w http.ResponseWriter, r *http.Request) {
+	slotID, ok := parseUUID(chi.URLParam(r, "slot_id"), h.logger)
+	if !ok {
+		respondError(w, http.StatusBadRequest, "invalid_id", "invalid slot ID")
+		return
+	}
+
+	var req struct {
+		ScheduledDate string `json:"scheduled_date"`
+	}
+	if err := parseJSON(r, &req); err != nil {
+		respondError(w, http.StatusBadRequest, "invalid_body", "invalid request body")
+		return
+	}
+
+	slot, err := h.slotSvc.MoveSlot(r.Context(), slotID, req.ScheduledDate)
+	if err != nil {
+		h.logger.Error("move slot failed", slog.String("error", err.Error()))
+		respondError(w, http.StatusInternalServerError, "internal_error", "failed to move slot")
+		return
+	}
+
+	respondJSON(w, http.StatusOK, slot)
+}
+
 func (h *SlotHandler) StartPosting(w http.ResponseWriter, r *http.Request) {
 	planID, ok := parseUUID(chi.URLParam(r, "plan_id"), h.logger)
 	if !ok {

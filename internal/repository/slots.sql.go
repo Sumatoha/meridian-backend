@@ -140,17 +140,17 @@ func (q *Queries) IncrementSlotRegeneration(ctx context.Context, id uuid.UUID) e
 func (q *Queries) ApproveAllDraftSlots(ctx context.Context, planID uuid.UUID) (int64, error) {
 	tag, err := q.db.Exec(ctx,
 		`UPDATE content_slots SET status = 'approved', updated_at = NOW()
-		WHERE plan_id = $1 AND status = 'draft' AND media::text != '[]'`, planID)
+		WHERE plan_id = $1 AND status = 'draft'`, planID)
 	if err != nil {
 		return 0, err
 	}
 	return tag.RowsAffected(), nil
 }
 
-func (q *Queries) CountSlotsWithoutMedia(ctx context.Context, planID uuid.UUID) (int32, error) {
+func (q *Queries) CountApprovedWithoutMedia(ctx context.Context, planID uuid.UUID) (int32, error) {
 	var count int32
 	err := q.db.QueryRow(ctx,
-		`SELECT COUNT(*)::int FROM content_slots WHERE plan_id = $1 AND status = 'draft' AND media::text = '[]'`,
+		`SELECT COUNT(*)::int FROM content_slots WHERE plan_id = $1 AND status = 'approved' AND media::text = '[]'`,
 		planID).Scan(&count)
 	return count, err
 }

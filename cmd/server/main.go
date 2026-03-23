@@ -223,6 +223,9 @@ func main() {
 		r.Get("/plans/{plan_id}/slots", slotH.List)
 		r.Get("/slots/{slot_id}", slotH.Get)
 		r.Patch("/slots/{slot_id}", slotH.Update)
+		r.Post("/slots/{slot_id}/approve", slotH.Approve)
+		r.Post("/slots/{slot_id}/regenerate", slotH.Regenerate)
+		r.Post("/slots/{slot_id}/move", slotH.Move)
 
 		// Media
 		r.Post("/slots/{slot_id}/media", mediaH.Upload)
