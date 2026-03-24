@@ -264,6 +264,8 @@ func main() {
 		slog.Bool("has_dodo", cfg.DodoAPIKey != ""),
 		slog.Bool("has_kaspi", cfg.KaspiMerchantID != ""),
 		slog.String("cors_origin", allowedOrigin),
+		slog.String("storage_url", cfg.SupabaseStorageURL),
+		slog.String("supabase_url", cfg.SupabaseURL),
 	)
 
 	// Start server
