@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 )
 
 type Config struct {
@@ -50,6 +51,11 @@ func Load() (Config, error) {
 		KaspiMerchantID:    os.Getenv("KASPI_MERCHANT_ID"),
 		KaspiSecret:        os.Getenv("KASPI_SECRET"),
 		Environment:        getEnvOr("ENVIRONMENT", "development"),
+	}
+
+	// Auto-derive storage URL from Supabase URL if not set
+	if cfg.SupabaseStorageURL == "" && cfg.SupabaseURL != "" {
+		cfg.SupabaseStorageURL = strings.TrimRight(cfg.SupabaseURL, "/") + "/storage/v1"
 	}
 
 	if cfg.DatabaseURL == "" {
