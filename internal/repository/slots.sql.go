@@ -16,7 +16,7 @@ import (
 
 const approveAllDraftSlots = `-- name: ApproveAllDraftSlots :execrows
 UPDATE content_slots SET status = 'approved', updated_at = NOW()
-WHERE plan_id = $1 AND status = 'draft'
+WHERE plan_id = $1 AND status = 'draft' AND media::text != '[]'
 `
 
 func (q *Queries) ApproveAllDraftSlots(ctx context.Context, planID uuid.UUID) (int64, error) {

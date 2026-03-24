@@ -58,7 +58,7 @@ WHERE id = $1;
 
 -- name: ApproveAllDraftSlots :execrows
 UPDATE content_slots SET status = 'approved', updated_at = NOW()
-WHERE plan_id = $1 AND status = 'draft';
+WHERE plan_id = $1 AND status = 'draft' AND media::text != '[]';
 
 -- name: CountApprovedWithoutMedia :one
 SELECT COUNT(*)::int FROM content_slots
