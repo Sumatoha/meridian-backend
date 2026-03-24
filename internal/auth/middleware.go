@@ -17,6 +17,7 @@ type contextKey string
 const (
 	userIDKey   contextKey = "user_id"
 	supabaseKey contextKey = "supabase_user_id"
+	emailKey    contextKey = "email"
 )
 
 type Middleware struct {
@@ -129,6 +130,9 @@ func (m *Middleware) Authenticate(next http.Handler) http.Handler {
 		)
 
 		ctx := context.WithValue(r.Context(), supabaseKey, supabaseUID)
+		if email, ok := claims["email"].(string); ok {
+			ctx = context.WithValue(ctx, emailKey, email)
+		}
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
@@ -177,4 +181,9 @@ func SetUserID(ctx context.Context, id uuid.UUID) context.Context {
 func UserID(ctx context.Context) uuid.UUID {
 	id, _ := ctx.Value(userIDKey).(uuid.UUID)
 	return id
+}
+
+func Email(ctx context.Context) string {
+	email, _ := ctx.Value(emailKey).(string)
+	return email
 }

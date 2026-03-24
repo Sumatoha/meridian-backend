@@ -141,7 +141,7 @@ func main() {
 				return
 			}
 
-			userID, err := accountSvc.EnsureUser(r.Context(), supabaseUID, "")
+			userID, err := accountSvc.EnsureUser(r.Context(), supabaseUID, auth.Email(r.Context()))
 			if err != nil {
 				logger.Error("user resolution failed",
 					slog.String("error", err.Error()),
