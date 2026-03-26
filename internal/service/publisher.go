@@ -169,10 +169,15 @@ func (ps *PublisherService) publishSlotInternal(ctx context.Context, slot reposi
 	}
 
 	// Update status to publishing
-	ps.queries.UpdateSlotStatus(ctx, repository.UpdateSlotStatusParams{
+	if err := ps.queries.UpdateSlotStatus(ctx, repository.UpdateSlotStatusParams{
 		ID:     slot.ID,
 		Status: "publishing",
-	})
+	}); err != nil {
+		ps.logger.Error("failed to set slot to publishing",
+			slog.String("slot_id", slot.ID.String()),
+			slog.String("error", err.Error()),
+		)
+	}
 
 	var result instagram.PublishResult
 	var publishErr error
