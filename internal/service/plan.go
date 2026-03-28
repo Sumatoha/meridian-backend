@@ -143,135 +143,182 @@ func (s *PlanService) GeneratePlan(ctx context.Context, userID, accountID uuid.U
 		}
 	}
 
-	// ── Phase 1: Generate skeleton (fast — ~3 sec) ──
-	s.logger.Info("phase 1: generating skeleton",
-		slog.String("account_id", accountID.String()),
-		slog.String("plan_id", plan.ID.String()),
-		slog.Int("total_slots", totalSlots),
-	)
-
-	skeletonPrompt := ai.BuildSkeletonUserPrompt(
-		totalSlots,
-		startDate.Format("2006-01-02"),
-		endDate.Format("2006-01-02"),
-	)
-
-	skeletonRaw, err := s.aiClient.Generate(ctx, systemPrompt, skeletonPrompt, 4000)
-	if err != nil {
-		failPlan(fmt.Sprintf("skeleton generation failed: %v", err))
-		return uuid.Nil, fmt.Errorf("generate plan: skeleton: %w", err)
-	}
-
-	type skeletonSlot struct {
-		DayNumber     int    `json:"day_number"`
-		ScheduledDate string `json:"scheduled_date"`
-		ScheduledTime string `json:"scheduled_time"`
-		Title         string `json:"title"`
-		ContentType   string `json:"content_type"`
-		Format        string `json:"format"`
-	}
-
-	skeleton, err := ai.ParseJSON[[]skeletonSlot](skeletonRaw)
-	if err != nil {
-		s.logger.Error("parse skeleton failed",
-			slog.String("error", err.Error()),
-			slog.String("raw", truncateStr(skeletonRaw, 500)),
-		)
-		failPlan(fmt.Sprintf("skeleton parse failed: %v", err))
-		return uuid.Nil, fmt.Errorf("generate plan: parse skeleton: %w", err)
-	}
-
-	s.logger.Info("phase 1 complete",
-		slog.Int("skeleton_slots", len(skeleton)),
-	)
-
-	if len(skeleton) == 0 {
-		failPlan("skeleton returned 0 slots")
-		return uuid.Nil, fmt.Errorf("generate plan: skeleton returned 0 slots")
-	}
-
-	// ── Phase 2: Generate details in parallel (~10-15 sec) ──
-	type batchRange struct {
-		from, to int
-	}
-	groupSize := (len(skeleton) + 3) / 4 // ceil division by 4
-	var batches []batchRange
-	for i := 0; i < len(skeleton); i += groupSize {
-		end := i + groupSize
-		if end > len(skeleton) {
-			end = len(skeleton)
-		}
-		dayFrom := skeleton[i].DayNumber
-		dayTo := skeleton[end-1].DayNumber
-		batches = append(batches, batchRange{from: dayFrom, to: dayTo})
-	}
-
-	s.logger.Info("phase 2: generating details in parallel",
-		slog.Int("batches", len(batches)),
-	)
-
-	skeletonJSON := skeletonRaw
-
-	type batchResult struct {
-		index int
-		slots []slotAIResponse
-		err   error
-	}
-
-	results := make(chan batchResult, len(batches))
-
-	for i, b := range batches {
-		go func(idx int, br batchRange) {
-			detailPrompt := ai.BuildDetailsUserPrompt(br.from, br.to, skeletonJSON)
-			raw, err := s.aiClient.Generate(ctx, systemPrompt, detailPrompt, 16000)
-			if err != nil {
-				results <- batchResult{index: idx, err: fmt.Errorf("batch %d: %w", idx+1, err)}
-				return
-			}
-
-			parsed, err := ai.ParseJSON[[]slotAIResponse](raw)
-			if err != nil {
-				s.logger.Error("parse detail batch failed",
-					slog.Int("batch", idx+1),
-					slog.String("error", err.Error()),
-					slog.String("raw", truncateStr(raw, 500)),
-				)
-				results <- batchResult{index: idx, err: fmt.Errorf("parse batch %d: %w", idx+1, err)}
-				return
-			}
-
-			s.logger.Info("detail batch complete",
-				slog.Int("batch", idx+1),
-				slog.Int("slots", len(parsed)),
-			)
-			results <- batchResult{index: idx, slots: parsed}
-		}(i, b)
-	}
-
-	// Collect results
-	allBatches := make([][]slotAIResponse, len(batches))
-	for range batches {
-		res := <-results
-		if res.err != nil {
-			failPlan(fmt.Sprintf("detail generation failed: %v", res.err))
-			return uuid.Nil, fmt.Errorf("generate plan: details: %w", res.err)
-		}
-		allBatches[res.index] = res.slots
-	}
-
-	// Merge all slots in order
 	var slots []slotAIResponse
-	for _, batch := range allBatches {
-		slots = append(slots, batch...)
-	}
 
-	s.logger.Info("phase 2 complete",
-		slog.Int("total_slots", len(slots)),
-	)
+	// Small plans (<=12 slots): single-phase generation — 1 API call instead of 5
+	// Large plans (>12 slots): two-phase (skeleton + parallel detail batches)
+	const singlePhaseThreshold = 12
 
-	if len(slots) == 0 {
-		failPlan("details returned 0 slots")
-		return uuid.Nil, fmt.Errorf("generate plan: details returned 0 slots")
+	if totalSlots <= singlePhaseThreshold {
+		// ── Single-phase: generate full plan in one call ──
+		s.logger.Info("single-phase generation",
+			slog.String("plan_id", plan.ID.String()),
+			slog.Int("total_slots", totalSlots),
+		)
+
+		userPrompt := ai.BuildPlanUserPrompt(
+			totalSlots,
+			startDate.Format("2006-01-02"),
+			endDate.Format("2006-01-02"),
+		)
+
+		raw, err := s.aiClient.Generate(ctx, systemPrompt, userPrompt, 12000)
+		if err != nil {
+			failPlan(fmt.Sprintf("single-phase generation failed: %v", err))
+			return uuid.Nil, fmt.Errorf("generate plan: single-phase: %w", err)
+		}
+
+		parsed, err := ai.ParseJSON[[]slotAIResponse](raw)
+		if err != nil {
+			s.logger.Error("parse single-phase failed",
+				slog.String("error", err.Error()),
+				slog.String("raw", truncateStr(raw, 500)),
+			)
+			failPlan(fmt.Sprintf("single-phase parse failed: %v", err))
+			return uuid.Nil, fmt.Errorf("generate plan: parse single-phase: %w", err)
+		}
+
+		s.logger.Info("single-phase complete",
+			slog.Int("slots", len(parsed)),
+		)
+
+		if len(parsed) == 0 {
+			failPlan("single-phase returned 0 slots")
+			return uuid.Nil, fmt.Errorf("generate plan: single-phase returned 0 slots")
+		}
+
+		slots = parsed
+	} else {
+		// ── Two-phase: skeleton + parallel detail batches ──
+
+		// Phase 1: Generate skeleton (fast — ~3 sec)
+		s.logger.Info("phase 1: generating skeleton",
+			slog.String("plan_id", plan.ID.String()),
+			slog.Int("total_slots", totalSlots),
+		)
+
+		skeletonPrompt := ai.BuildSkeletonUserPrompt(
+			totalSlots,
+			startDate.Format("2006-01-02"),
+			endDate.Format("2006-01-02"),
+		)
+
+		skeletonRaw, err := s.aiClient.Generate(ctx, systemPrompt, skeletonPrompt, 2500)
+		if err != nil {
+			failPlan(fmt.Sprintf("skeleton generation failed: %v", err))
+			return uuid.Nil, fmt.Errorf("generate plan: skeleton: %w", err)
+		}
+
+		type skeletonSlot struct {
+			DayNumber     int    `json:"day_number"`
+			ScheduledDate string `json:"scheduled_date"`
+			ScheduledTime string `json:"scheduled_time"`
+			Title         string `json:"title"`
+			ContentType   string `json:"content_type"`
+			Format        string `json:"format"`
+		}
+
+		skeleton, err := ai.ParseJSON[[]skeletonSlot](skeletonRaw)
+		if err != nil {
+			s.logger.Error("parse skeleton failed",
+				slog.String("error", err.Error()),
+				slog.String("raw", truncateStr(skeletonRaw, 500)),
+			)
+			failPlan(fmt.Sprintf("skeleton parse failed: %v", err))
+			return uuid.Nil, fmt.Errorf("generate plan: parse skeleton: %w", err)
+		}
+
+		s.logger.Info("phase 1 complete",
+			slog.Int("skeleton_slots", len(skeleton)),
+		)
+
+		if len(skeleton) == 0 {
+			failPlan("skeleton returned 0 slots")
+			return uuid.Nil, fmt.Errorf("generate plan: skeleton returned 0 slots")
+		}
+
+		// Phase 2: Generate details in parallel (~10-15 sec)
+		type batchRange struct {
+			from, to int
+		}
+		groupSize := (len(skeleton) + 3) / 4 // ceil division by 4
+		var batches []batchRange
+		for i := 0; i < len(skeleton); i += groupSize {
+			end := i + groupSize
+			if end > len(skeleton) {
+				end = len(skeleton)
+			}
+			dayFrom := skeleton[i].DayNumber
+			dayTo := skeleton[end-1].DayNumber
+			batches = append(batches, batchRange{from: dayFrom, to: dayTo})
+		}
+
+		s.logger.Info("phase 2: generating details in parallel",
+			slog.Int("batches", len(batches)),
+		)
+
+		skeletonJSON := skeletonRaw
+
+		type batchResult struct {
+			index int
+			slots []slotAIResponse
+			err   error
+		}
+
+		results := make(chan batchResult, len(batches))
+
+		for i, b := range batches {
+			go func(idx int, br batchRange) {
+				detailPrompt := ai.BuildDetailsUserPrompt(br.from, br.to, skeletonJSON)
+				raw, err := s.aiClient.Generate(ctx, systemPrompt, detailPrompt, 10000)
+				if err != nil {
+					results <- batchResult{index: idx, err: fmt.Errorf("batch %d: %w", idx+1, err)}
+					return
+				}
+
+				parsed, err := ai.ParseJSON[[]slotAIResponse](raw)
+				if err != nil {
+					s.logger.Error("parse detail batch failed",
+						slog.Int("batch", idx+1),
+						slog.String("error", err.Error()),
+						slog.String("raw", truncateStr(raw, 500)),
+					)
+					results <- batchResult{index: idx, err: fmt.Errorf("parse batch %d: %w", idx+1, err)}
+					return
+				}
+
+				s.logger.Info("detail batch complete",
+					slog.Int("batch", idx+1),
+					slog.Int("slots", len(parsed)),
+				)
+				results <- batchResult{index: idx, slots: parsed}
+			}(i, b)
+		}
+
+		// Collect results
+		allBatches := make([][]slotAIResponse, len(batches))
+		for range batches {
+			res := <-results
+			if res.err != nil {
+				failPlan(fmt.Sprintf("detail generation failed: %v", res.err))
+				return uuid.Nil, fmt.Errorf("generate plan: details: %w", res.err)
+			}
+			allBatches[res.index] = res.slots
+		}
+
+		// Merge all slots in order
+		for _, batch := range allBatches {
+			slots = append(slots, batch...)
+		}
+
+		s.logger.Info("phase 2 complete",
+			slog.Int("total_slots", len(slots)),
+		)
+
+		if len(slots) == 0 {
+			failPlan("details returned 0 slots")
+			return uuid.Nil, fmt.Errorf("generate plan: details returned 0 slots")
+		}
 	}
 
 	// Insert slots
