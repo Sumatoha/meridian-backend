@@ -118,9 +118,35 @@ func (s *PlanService) GeneratePlan(ctx context.Context, userID, accountID uuid.U
 	}
 	systemPrompt := s.buildPlanSystemPrompt(settings, brandContext)
 
+	// Create plan record IMMEDIATELY with 'generating' status so frontend can track
+	title := fmt.Sprintf("%s %d Plan", startDate.Month().String(), startDate.Year())
+	plan, err := s.queries.CreateGeneratingPlan(ctx, repository.CreateGeneratingPlanParams{
+		InstagramAccountID: accountID,
+		Title:              title,
+		StartDate:          startDate,
+		EndDate:            endDate,
+	})
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("generate plan: create generating plan: %w", err)
+	}
+
+	// Helper to mark plan as failed
+	failPlan := func(errMsg string) {
+		if failErr := s.queries.FailPlan(ctx, repository.FailPlanParams{
+			ID:           plan.ID,
+			ErrorMessage: &errMsg,
+		}); failErr != nil {
+			s.logger.Error("failed to mark plan as failed",
+				slog.String("plan_id", plan.ID.String()),
+				slog.String("error", failErr.Error()),
+			)
+		}
+	}
+
 	// ── Phase 1: Generate skeleton (fast — ~3 sec) ──
 	s.logger.Info("phase 1: generating skeleton",
 		slog.String("account_id", accountID.String()),
+		slog.String("plan_id", plan.ID.String()),
 		slog.Int("total_slots", totalSlots),
 	)
 
@@ -132,6 +158,7 @@ func (s *PlanService) GeneratePlan(ctx context.Context, userID, accountID uuid.U
 
 	skeletonRaw, err := s.aiClient.Generate(ctx, systemPrompt, skeletonPrompt, 4000)
 	if err != nil {
+		failPlan(fmt.Sprintf("skeleton generation failed: %v", err))
 		return uuid.Nil, fmt.Errorf("generate plan: skeleton: %w", err)
 	}
 
@@ -150,6 +177,7 @@ func (s *PlanService) GeneratePlan(ctx context.Context, userID, accountID uuid.U
 			slog.String("error", err.Error()),
 			slog.String("raw", truncateStr(skeletonRaw, 500)),
 		)
+		failPlan(fmt.Sprintf("skeleton parse failed: %v", err))
 		return uuid.Nil, fmt.Errorf("generate plan: parse skeleton: %w", err)
 	}
 
@@ -158,11 +186,11 @@ func (s *PlanService) GeneratePlan(ctx context.Context, userID, accountID uuid.U
 	)
 
 	if len(skeleton) == 0 {
+		failPlan("skeleton returned 0 slots")
 		return uuid.Nil, fmt.Errorf("generate plan: skeleton returned 0 slots")
 	}
 
 	// ── Phase 2: Generate details in parallel (~10-15 sec) ──
-	// Split into 4 groups and run concurrently
 	type batchRange struct {
 		from, to int
 	}
@@ -182,7 +210,6 @@ func (s *PlanService) GeneratePlan(ctx context.Context, userID, accountID uuid.U
 		slog.Int("batches", len(batches)),
 	)
 
-	// Skeleton JSON for context in each batch
 	skeletonJSON := skeletonRaw
 
 	type batchResult struct {
@@ -226,6 +253,7 @@ func (s *PlanService) GeneratePlan(ctx context.Context, userID, accountID uuid.U
 	for range batches {
 		res := <-results
 		if res.err != nil {
+			failPlan(fmt.Sprintf("detail generation failed: %v", res.err))
 			return uuid.Nil, fmt.Errorf("generate plan: details: %w", res.err)
 		}
 		allBatches[res.index] = res.slots
@@ -242,20 +270,8 @@ func (s *PlanService) GeneratePlan(ctx context.Context, userID, accountID uuid.U
 	)
 
 	if len(slots) == 0 {
+		failPlan("details returned 0 slots")
 		return uuid.Nil, fmt.Errorf("generate plan: details returned 0 slots")
-	}
-
-	// NOW create plan record — only after AI succeeded
-	title := fmt.Sprintf("%s %d Plan", startDate.Month().String(), startDate.Year())
-	plan, err := s.queries.CreatePlan(ctx, repository.CreatePlanParams{
-		InstagramAccountID: accountID,
-		Title:              title,
-		StartDate:          startDate,
-		EndDate:            endDate,
-		TotalSlots:         int32(len(slots)), // Use actual slot count from AI
-	})
-	if err != nil {
-		return uuid.Nil, fmt.Errorf("generate plan: create plan: %w", err)
 	}
 
 	// Insert slots
@@ -268,16 +284,13 @@ func (s *PlanService) GeneratePlan(ctx context.Context, userID, accountID uuid.U
 	var lastErr error
 	for i := range slots {
 		slot := &slots[i]
-		// Normalize AI output — DB has CHECK constraints for lowercase values
 		slot.ContentType = strings.ToLower(strings.TrimSpace(slot.ContentType))
 		slot.Format = strings.ToLower(strings.TrimSpace(slot.Format))
 		slot.ScheduledDate = strings.TrimSpace(slot.ScheduledDate)
 		slot.ScheduledTime = strings.TrimSpace(slot.ScheduledTime)
 
-		// Validate content_type
 		switch slot.ContentType {
 		case "useful", "selling", "personal", "entertaining":
-			// ok
 		default:
 			s.logger.Warn("invalid content_type from AI, defaulting to useful",
 				slog.Int("day", slot.DayNumber),
@@ -286,10 +299,8 @@ func (s *PlanService) GeneratePlan(ctx context.Context, userID, accountID uuid.U
 			slot.ContentType = "useful"
 		}
 
-		// Validate format
 		switch slot.Format {
 		case "reels", "carousel", "photo":
-			// ok
 		default:
 			s.logger.Warn("invalid format from AI, defaulting to photo",
 				slog.Int("day", slot.DayNumber),
@@ -368,6 +379,7 @@ func (s *PlanService) GeneratePlan(ctx context.Context, userID, accountID uuid.U
 	)
 
 	if inserted == 0 && len(slots) > 0 {
+		failPlan(fmt.Sprintf("all %d slots failed to insert", len(slots)))
 		return uuid.Nil, fmt.Errorf("generate plan: all %d slots failed to insert: %w", len(slots), lastErr)
 	}
 
@@ -378,13 +390,23 @@ func (s *PlanService) GeneratePlan(ctx context.Context, userID, accountID uuid.U
 		)
 	}
 
+	// Finalize plan — set status to 'draft' with actual slot count
+	if _, err := s.queries.FinalizePlan(ctx, repository.FinalizePlanParams{
+		ID:         plan.ID,
+		TotalSlots: int32(inserted),
+	}); err != nil {
+		s.logger.Error("failed to finalize plan",
+			slog.String("plan_id", plan.ID.String()),
+			slog.String("error", err.Error()),
+		)
+	}
+
 	// Increment monthly usage counter after successful generation
 	if err := s.tierSvc.IncrementPlanGeneration(ctx, userID); err != nil {
 		s.logger.Error("failed to increment plan generation usage",
 			slog.String("user_id", userID.String()),
 			slog.String("error", err.Error()),
 		)
-		// Don't fail the whole operation — plan was already created
 	}
 
 	return plan.ID, nil
@@ -572,6 +594,7 @@ func planToSummaryDTO(p repository.ContentPlan) dto.ContentPlanSummaryDTO {
 		ApprovedSlots:  int(p.ApprovedSlots),
 		PublishedSlots: int(p.PublishedSlots),
 		CreatedAt:      p.CreatedAt,
+		ErrorMessage:   p.ErrorMessage,
 	}
 }
 

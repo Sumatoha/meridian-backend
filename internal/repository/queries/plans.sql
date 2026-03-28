@@ -3,6 +3,25 @@ INSERT INTO content_plans (instagram_account_id, title, start_date, end_date, to
 VALUES ($1, $2, $3, $4, $5)
 RETURNING *;
 
+-- name: CreateGeneratingPlan :one
+INSERT INTO content_plans (instagram_account_id, title, start_date, end_date, total_slots, status)
+VALUES ($1, $2, $3, $4, 0, 'generating')
+RETURNING *;
+
+-- name: FinalizePlan :one
+UPDATE content_plans SET status = 'draft', total_slots = $2, error_message = NULL, updated_at = NOW()
+WHERE id = $1
+RETURNING *;
+
+-- name: FailPlan :exec
+UPDATE content_plans SET status = 'failed', error_message = $2, updated_at = NOW()
+WHERE id = $1;
+
+-- name: GetGeneratingPlanByAccountID :one
+SELECT * FROM content_plans
+WHERE instagram_account_id = $1 AND status = 'generating'
+LIMIT 1;
+
 -- name: GetPlansByAccountID :many
 SELECT * FROM content_plans
 WHERE instagram_account_id = $1

@@ -157,6 +157,7 @@ type ContentPlanSummaryDTO struct {
 	ApprovedSlots   int       `json:"approved_slots"`
 	PublishedSlots  int       `json:"published_slots"`
 	CreatedAt       time.Time `json:"created_at"`
+	ErrorMessage    *string   `json:"error_message,omitempty"`
 }
 
 type ContentPlanDTO struct {
